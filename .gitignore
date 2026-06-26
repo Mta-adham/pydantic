@@ -5,9 +5,6 @@ eval/
 # Latest benchmark copy (regenerated each run)
 artemis_results.json
 
-# Upstream pydantic clone (edit here; not part of the hub repo)
-project/
-
 # Python
 __pycache__/
 *.py[cod]

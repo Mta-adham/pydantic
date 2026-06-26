@@ -3,10 +3,12 @@
 Standalone git repository (benchmark hub). Task definitions live in `benchmarks/*/benchmark.yaml`.
 Evaluation runs in Docker — not your local `project/` checkout.
 
-Clone the upstream repo into `project/` once:
+`project/` is a [git submodule](https://github.com/pydantic/pydantic) (the upstream pydantic repo you edit).
 
 ```bash
-git clone https://github.com/pydantic/pydantic.git project
+git clone --recurse-submodules <this-repo-url>
+# or after a plain clone:
+git submodule update --init --recursive
 ```
 
 ## Layout
