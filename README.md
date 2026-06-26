@@ -3,12 +3,12 @@
 Standalone git repository (benchmark hub). Task definitions live in `benchmarks/*/benchmark.yaml`.
 Evaluation runs in Docker — not your local `project/` checkout.
 
-`project/` is a [git submodule](https://github.com/pydantic/pydantic) (the upstream pydantic repo you edit).
+`project/` contains a vendored copy of [pydantic](https://github.com/pydantic/pydantic)
+(source files are in this repo). On first `prepare`/`compile`, a local git repo is
+initialized in `project/` (not committed) so tasks can `git checkout` their base commits.
 
 ```bash
-git clone --recurse-submodules <this-repo-url>
-# or after a plain clone:
-git submodule update --init --recursive
+git clone git@github.com:Mta-adham/pydantic.git
 ```
 
 ## Layout
