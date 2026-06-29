@@ -9,7 +9,16 @@ initialized in `project/` (not committed) so tasks can `git checkout` their base
 
 ```bash
 git clone git@github.com:Mta-adham/pydantic.git
+cd pydantic
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+# When this repo lives under gso/repos/pydantic/ (monorepo checkout):
+pip install -e ../..
 ```
+
+Requires Docker for `benchmark` / `test`, and `HF_TOKEN` (or `HF_READ_TOKEN`) for dataset-backed runs.
 
 ## Layout
 
@@ -23,6 +32,7 @@ repos/pydantic/
     active -> …            ← current task
     eval-pydantic-*/       ← per-task results (output/artemis_results.json)
   artemis_results.json     ← latest benchmark copy (hub root, overwritten each run)
+  requirements.txt         ← hub Python dependencies (.venv at hub root)
   scripts/                 ← env.sh, run.sh, hub.py, images.sh
 ```
 

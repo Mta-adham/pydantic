@@ -8,6 +8,9 @@ artemis_results.json
 # Local git metadata for task switching (vendored files are tracked above)
 project/.git/
 
+# Local Python environment
+.venv/
+
 # Python
 __pycache__/
 *.py[cod]

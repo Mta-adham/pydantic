@@ -9,7 +9,7 @@ source "${SCRIPT_DIR}/env.sh"
 pydantic_export_paths
 cd "${HUB_ROOT}"
 
-PY="${GSO_ROOT}/.venv/bin/python3"
+PY="${PYDANTIC_ROOT}/.venv/bin/python3"
 export GSO_WORKSPACE_ROOT="${PYDANTIC_ROOT}"
 export GSO_PROJECT_ROOT="${PYDANTIC_ROOT}/project"
 
