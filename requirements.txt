@@ -1,9 +1,11 @@
 # Pydantic benchmark hub — Python dependencies (requires Python 3.12+).
 #
 # Setup (from this directory):
+#   ./scripts/setup.sh
+#
+# Or manually (always use .venv/bin/pip, not system pip):
 #   python3.12 -m venv .venv
-#   source .venv/bin/activate
-#   pip install -r requirements.txt
+#   .venv/bin/pip install -r requirements.txt
 #
 # Inside the gso monorepo (repos/pydantic/), also install the parent package
 # editable so ./pydantic uses local scripts and examples/local_patch_workflow.py:

@@ -13,12 +13,19 @@ Requires **Python 3.12+**, Docker for `benchmark` / `test`, and `HF_TOKEN` (or `
 git clone git@github.com:Mta-adham/pydantic.git
 cd pydantic
 
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-# When this repo lives under gso/repos/pydantic/ (monorepo checkout):
-pip install -e ../..
+./scripts/setup.sh
 ```
+
+Or manually:
+
+```bash
+python3.12 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+# Monorepo (repos/pydantic/ under gso):
+.venv/bin/pip install -e ../..
+```
+
+Use `.venv/bin/pip` (not system `pip`) so the install targets Python 3.12. If `uv` is installed, `./scripts/setup.sh` uses it automatically.
 
 ## Layout
 
