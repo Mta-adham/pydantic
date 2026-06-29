@@ -1,7 +1,7 @@
-# Pydantic benchmark hub — Python dependencies.
+# Pydantic benchmark hub — Python dependencies (requires Python 3.12+).
 #
 # Setup (from this directory):
-#   python3 -m venv .venv
+#   python3.12 -m venv .venv
 #   source .venv/bin/activate
 #   pip install -r requirements.txt
 #

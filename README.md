@@ -7,18 +7,18 @@ Evaluation runs in Docker — not your local `project/` checkout.
 (source files are in this repo). On first `prepare`/`compile`, a local git repo is
 initialized in `project/` (not committed) so tasks can `git checkout` their base commits.
 
+Requires **Python 3.12+**, Docker for `benchmark` / `test`, and `HF_TOKEN` (or `HF_READ_TOKEN`) for dataset-backed runs.
+
 ```bash
 git clone git@github.com:Mta-adham/pydantic.git
 cd pydantic
 
-python3 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 # When this repo lives under gso/repos/pydantic/ (monorepo checkout):
 pip install -e ../..
 ```
-
-Requires Docker for `benchmark` / `test`, and `HF_TOKEN` (or `HF_READ_TOKEN`) for dataset-backed runs.
 
 ## Layout
 
