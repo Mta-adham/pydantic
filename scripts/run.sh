@@ -1,182 +1,113 @@
 #!/usr/bin/env bash
-# Core driver: prepare | compile | benchmark | test for all pydantic tasks.
-#
-# Usage:
-#   ./scripts/run.sh prepare [instance_id] [--force]
-#   ./scripts/run.sh compile [instance_id] [--force]
-#   ./scripts/run.sh benchmark [instance_id] [--reuse-report] [--keep-image] ...
-#   ./scripts/run.sh test [instance_id] [--from-benchmark] [--keep-image] ...
-
+# Workflow commands: prepare | compile | benchmark | test | reset
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/env.sh"
+
 pydantic_export_paths
+pydantic_activate
 
-COMMAND="${1:-}"
-shift || true
+COMMAND="${1:?command required}"
+shift
 
-INSTANCE_IDS=()
-PREPARE_ARGS=()
-PASS_ARGS=()
-
-usage() {
-    cat <<'EOF'
-Pydantic performance benchmark — prepare, compile, benchmark, test.
-
-Usage (from repos/pydantic/):
-  ./pydantic prepare [instance_id] [--force]     # setup eval + checkout project/
-  ./pydantic compile [instance_id] [--force]     # prepare if needed, then build patch
-  ./pydantic benchmark [instance_id] [--reuse-report] [--keep-image]
-  ./pydantic test [--from-benchmark] [instance_id] [--keep-image]
-  ./pydantic reset [instance_id]                 # discard edits, restore project/
-
-  commands/compile, commands/benchmark, …          # same as above
-
-Without instance_id: runs all tasks in benchmarks/*/benchmark.yaml.
-EOF
-    echo ""
-    echo "Tasks:"
-    pydantic_list_tasks | awk -F'\t' '{printf "  %s\n", $1}'
-    exit "${1:-0}"
-}
-
-[[ -n "$COMMAND" ]] || usage 1
-case "$COMMAND" in
-    prepare|compile|benchmark|test|reset) ;;
-    -h|--help) usage 0 ;;
-    *)
-        echo "Unknown command: $COMMAND (expected prepare, compile, benchmark, test, or reset)" >&2
-        usage 1
-        ;;
-esac
+TASK_IDS=()
+FORCE=false
+EXTRA=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --prepare)
-            echo "Note: compile always prepares first; --prepare is no longer required." >&2
-            shift
-            ;;
-        --force)
-            PREPARE_ARGS+=(--force)
-            shift
-            ;;
-        pydantic__*)
-            INSTANCE_IDS+=("$1")
-            shift
-            ;;
-        *)
-            PASS_ARGS+=("$1")
-            shift
-            ;;
+        --force) FORCE=true; shift ;;
+        pydantic__*) TASK_IDS+=("$1"); shift ;;
+        *) EXTRA+=("$1"); shift ;;
     esac
 done
 
-if [[ ${#INSTANCE_IDS[@]} -eq 0 ]]; then
-    mapfile -t INSTANCE_IDS < <(pydantic_task_ids)
+if [[ ${#TASK_IDS[@]} -eq 0 ]]; then
+    mapfile -t TASK_IDS < <(pydantic_task_ids)
 fi
-
-if [[ ${#INSTANCE_IDS[@]} -eq 0 ]]; then
+if [[ ${#TASK_IDS[@]} -eq 0 ]]; then
     echo "No tasks in ${PYDANTIC_ROOT}/benchmarks/" >&2
     exit 1
 fi
 
-pydantic_activate
+PREPARE_EXTRA=()
+[[ "$FORCE" == true ]] && PREPARE_EXTRA+=(--force)
 
 run_prepare() {
-    local iid="$1"
+    local task="$1"
     local quiet="${2:-0}"
     if [[ "$quiet" == "1" ]]; then
         GSO_QUIET_PREPARE=1 GSO_WORKSPACE_ROOT="${GSO_WORKSPACE_ROOT}" \
-            "${GSO_SCRIPTS}/compile_patch.sh" "$iid" --prepare "${PREPARE_ARGS[@]}"
+            "${GSO_SCRIPTS}/compile_patch.sh" "$task" --prepare "${PREPARE_EXTRA[@]}"
     else
         GSO_WORKSPACE_ROOT="${GSO_WORKSPACE_ROOT}" \
-            "${GSO_SCRIPTS}/compile_patch.sh" "$iid" --prepare "${PREPARE_ARGS[@]}"
+            "${GSO_SCRIPTS}/compile_patch.sh" "$task" --prepare "${PREPARE_EXTRA[@]}"
     fi
 }
 
-print_comparison_summary() {
-    local iid="$1"
-    local run_id="${2:-benchmark-${iid}}"
-    local eval_dir
-    eval_dir=$(GSO_WORKSPACE_ROOT="${PYDANTIC_ROOT}" GSO_PROJECT_ROOT="${GSO_PROJECT_ROOT}" \
-        python3 -c "
-import sys
-sys.path.insert(0, '${GSO_ROOT}/examples')
-from local_patch_workflow import workspace_dir
-print(workspace_dir('${iid}'))
-")
-    local summary="${eval_dir}/output/summary.txt"
-
+show_summary() {
+    local task="$1"
+    local summary
+    summary="$(pydantic_eval_dir "$task")/output/summary.txt"
     if [[ -f "$summary" ]]; then
         echo ""
-        echo "--- baseline vs optimized (${iid}) ---"
+        echo "--- ${task} ---"
         cat "$summary"
     fi
 }
 
 failures=()
-echo "=== pydantic ${COMMAND}: ${#INSTANCE_IDS[@]} task(s) ==="
-echo "Project:  ${GSO_PROJECT_ROOT}/"
-if [[ ${#INSTANCE_IDS[@]} -gt 1 ]]; then
-    export GSO_ALLOW_TASK_SWITCH=1
-fi
-GSO_WORKSPACE_ROOT="${PYDANTIC_ROOT}" GSO_PROJECT_ROOT="${GSO_PROJECT_ROOT}" \
-    python3 -c "
-import sys
-sys.path.insert(0, '${GSO_ROOT}/examples')
-from local_patch_workflow import format_active_task_status
-print(format_active_task_status())
-" 2>/dev/null || true
 
-for iid in "${INSTANCE_IDS[@]}"; do
+echo "=== ${COMMAND} (${#TASK_IDS[@]} task(s)) ==="
+echo "project/: ${GSO_PROJECT_ROOT}/"
+[[ ${#TASK_IDS[@]} -gt 1 ]] && export GSO_ALLOW_TASK_SWITCH=1
+pydantic_print_status
+
+for task in "${TASK_IDS[@]}"; do
     echo ""
-    echo "---------- ${iid} ----------"
+    echo ">> ${task}"
     case "$COMMAND" in
         prepare)
-            if ! run_prepare "$iid"; then
-                failures+=("$iid")
-            fi
+            run_prepare "$task" || failures+=("$task")
             ;;
         compile)
-            if ! run_prepare "$iid" 1; then
-                failures+=("$iid")
-                continue
-            fi
-            if ! GSO_WORKSPACE_ROOT="${GSO_WORKSPACE_ROOT}" \
-                "${GSO_SCRIPTS}/compile_patch.sh" "$iid"; then
-                failures+=("$iid")
-            fi
+            run_prepare "$task" 1 || { failures+=("$task"); continue; }
+            GSO_WORKSPACE_ROOT="${GSO_WORKSPACE_ROOT}" \
+                "${GSO_SCRIPTS}/compile_patch.sh" "$task" || failures+=("$task")
             ;;
         benchmark)
-            if ! GSO_WORKSPACE_ROOT="${GSO_WORKSPACE_ROOT}" \
-                "${GSO_SCRIPTS}/benchmark_patches.sh" "$iid" "${PASS_ARGS[@]}"; then
-                failures+=("$iid")
+            if GSO_WORKSPACE_ROOT="${GSO_WORKSPACE_ROOT}" \
+                "${GSO_SCRIPTS}/benchmark_patches.sh" "$task" "${EXTRA[@]}"; then
+                show_summary "$task"
             else
-                print_comparison_summary "$iid"
+                failures+=("$task")
             fi
             ;;
         test)
-            if ! GSO_WORKSPACE_ROOT="${GSO_WORKSPACE_ROOT}" \
-                "${GSO_SCRIPTS}/test_patches.sh" "$iid" "${PASS_ARGS[@]}"; then
-                failures+=("$iid")
+            if GSO_WORKSPACE_ROOT="${GSO_WORKSPACE_ROOT}" \
+                "${GSO_SCRIPTS}/test_patches.sh" "$task" "${EXTRA[@]}"; then
+                show_summary "$task"
             else
-                print_comparison_summary "$iid"
+                failures+=("$task")
             fi
             ;;
         reset)
-            if ! GSO_WORKSPACE_ROOT="${GSO_WORKSPACE_ROOT}" \
-                GSO_PROJECT_ROOT="${GSO_PROJECT_ROOT}" pydantic_run_py reset "$iid"; then
-                failures+=("$iid")
-            fi
+            GSO_WORKSPACE_ROOT="${GSO_WORKSPACE_ROOT}" \
+                GSO_PROJECT_ROOT="${GSO_PROJECT_ROOT}" \
+                pydantic_workflow reset "$task" || failures+=("$task")
+            ;;
+        *)
+            echo "Unknown command: $COMMAND" >&2
+            exit 1
             ;;
     esac
 done
 
 echo ""
 if ((${#failures[@]} > 0)); then
-    echo "Failed (${#failures[@]}): ${failures[*]}"
+    echo "Failed: ${failures[*]}"
     exit 1
 fi
-echo "All pydantic ${COMMAND} steps succeeded (${#INSTANCE_IDS[@]} task(s))."
+echo "Done (${#TASK_IDS[@]} task(s))."

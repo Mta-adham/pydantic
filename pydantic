@@ -1,3 +1,62 @@
 #!/usr/bin/env bash
+# Pydantic benchmark hub — single entry point.
 set -euo pipefail
-exec "$(cd "$(dirname "$0")" && pwd)/commands/pydantic" "$@"
+
+HUB="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "${HUB}/scripts/env.sh"
+
+usage() {
+    cat <<'EOF'
+Pydantic benchmark hub
+
+Setup:
+  source scripts/setup.sh                 create .venv and activate
+
+Workflow ([task] optional — default: all tasks):
+  ./pydantic compile  [task]              checkout project/ + build patch
+  ./pydantic prepare  [task]              setup eval workspace only
+  ./pydantic benchmark [task]             Docker performance eval
+  ./pydantic test     [task]              correctness tests
+  ./pydantic reset    [task]              discard edits in project/
+
+Docker images:
+  ./pydantic pull-images   [task]
+  ./pydantic verify-images [task] [--force]
+  ./pydantic pin-images    [task]
+
+Common options: --force  --reuse-report  --keep-image  --from-benchmark
+
+Example:
+  ./pydantic compile pydantic__pydantic-4a09447
+  ./pydantic benchmark pydantic__pydantic-4a09447
+  ./pydantic test pydantic__pydantic-4a09447 --from-benchmark
+EOF
+    pydantic_export_paths
+    if pydantic_list_tasks &>/dev/null; then
+        echo ""
+        echo "Tasks:"
+        pydantic_list_tasks | awk -F'\t' '{print "  " $1}'
+    fi
+    exit "${1:-0}"
+}
+
+[[ $# -gt 0 ]] || usage 1
+
+case "$1" in
+    -h|--help|help) usage 0 ;;
+    compile|prepare|benchmark|test|reset)
+        exec "${HUB}/scripts/run.sh" "$@"
+        ;;
+    pull-images|verify-images|pin-images)
+        exec "${HUB}/scripts/images.sh" "$@"
+        ;;
+    setup)
+        echo "Run: source scripts/setup.sh" >&2
+        exit 1
+        ;;
+    *)
+        echo "Unknown command: $1  (try: ./pydantic --help)" >&2
+        exit 1
+        ;;
+esac

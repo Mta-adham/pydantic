@@ -1,7 +1,7 @@
 # Pydantic benchmark hub — Python dependencies (requires Python 3.12+).
 #
-# Setup (from this directory):
-#   ./scripts/setup.sh
+# Setup (from hub root — use source so activation persists):
+#   source scripts/setup.sh
 #
 # Or manually (always use .venv/bin/pip, not system pip):
 #   python3.12 -m venv .venv

@@ -1,87 +1,109 @@
 # Pydantic optimization benchmark
 
-Standalone git repository (benchmark hub). Task definitions live in `benchmarks/*/benchmark.yaml`.
-Evaluation runs in Docker — not your local `project/` checkout.
+Digest-pinned benchmark hub for pydantic GSO tasks. Edit code in `project/`, run
+evaluation in Docker.
 
-`project/` contains a vendored copy of [pydantic](https://github.com/pydantic/pydantic)
-(source files are in this repo). On first `prepare`/`compile`, a local git repo is
-initialized in `project/` (not committed) so tasks can `git checkout` their base commits.
-
-Requires **Python 3.12+**, Docker for `benchmark` / `test`, and `HF_TOKEN` (or `HF_READ_TOKEN`) for dataset-backed runs.
+## Quick start
 
 ```bash
 git clone git@github.com:Mta-adham/pydantic.git
 cd pydantic
 
-./scripts/setup.sh
+source scripts/setup.sh
+./pydantic pull-images
+./pydantic compile pydantic__pydantic-4a09447
 ```
 
-Or manually:
+**Requires:** Python 3.12+, Docker, `HF_TOKEN` (or `HF_READ_TOKEN`)
+
+## Setup
 
 ```bash
-python3.12 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-# Monorepo (repos/pydantic/ under gso):
-.venv/bin/pip install -e ../..
+source scripts/setup.sh
 ```
 
-Use `.venv/bin/pip` (not system `pip`) so the install targets Python 3.12. If `uv` is installed, `./scripts/setup.sh` uses it automatically.
+Creates a fresh `.venv`, installs dependencies, and activates it in your shell.
 
-## Layout
+| How | Effect |
+|-----|--------|
+| `source scripts/setup.sh` | Install + activate (use this) |
+| `./scripts/setup.sh` | Install only — then run `source .venv/bin/activate` |
 
-```text
-repos/pydantic/
-  pydantic                 ← entry point
-  commands/                ← compile, benchmark, test, prepare, …
-  benchmarks/              ← task definitions (source of truth)
-  project/                 ← pydantic clone (edit here)
-  eval/
-    active -> …            ← current task
-    eval-pydantic-*/       ← per-task results (output/artemis_results.json)
-  artemis_results.json     ← latest benchmark copy (hub root, overwritten each run)
-  requirements.txt         ← hub Python dependencies (.venv at hub root)
-  scripts/                 ← env.sh, run.sh, hub.py, images.sh
+Inside the gso monorepo (`gso/repos/pydantic/`), setup also runs `pip install -e ../..`.
+
+`./pydantic` always uses `repos/pydantic/.venv` — even if the parent gso `.venv` is active.
+
+## Workflow
+
+```bash
+TASK=pydantic__pydantic-4a09447
+
+./pydantic compile  $TASK    # checkout project/ + build patch
+# edit project/pydantic/*.py
+./pydantic compile  $TASK    # rebuild patch
+./pydantic benchmark $TASK   # Docker perf eval
+./pydantic test $TASK --from-benchmark
 ```
 
 ## Commands
 
-From the hub root:
+Run `./pydantic --help` for the full list.
 
-```bash
-cd repos/pydantic
+| Command | What it does |
+|---------|----------------|
+| `compile [task]` | Prepare workspace + write `patch.diff` and `predictions.jsonl` |
+| `prepare [task]` | Setup only: checkout `project/`, create eval workspace |
+| `benchmark [task]` | Apply patch in Docker and measure performance |
+| `test [task]` | Run correctness tests (`--from-benchmark` to reuse last run) |
+| `reset [task]` | Discard edits in `project/` |
+| `pull-images [task]` | Pull pinned Docker images |
+| `verify-images [task]` | Check local images match pinned digests (`--force` to re-check) |
+| `pin-images [task]` | Record current registry digest in `benchmark.yaml` |
 
-./pydantic images pull
-./pydantic compile pydantic__pydantic-ac9e6ee   # prepares + builds patch
+`[task]` is optional — omit to run all tasks in `benchmarks/`.
 
-# edit project/...
-./pydantic prepare pydantic__pydantic-4a09447
-./pydantic compile pydantic__pydantic-ac9e6ee   # re-compile after edits
-./pydantic benchmark pydantic__pydantic-ac9e6ee
-./pydantic test pydantic__pydantic-ac9e6ee --from-benchmark
+**Results:** `eval/active/output/summary.txt` or `artemis_results.json` at hub root.
 
-cat eval/active/output/summary.txt
-# or latest benchmark JSON at hub root:
-cat artemis_results.json
-```
+**Active task:** `cat .active_task`
 
-Or call scripts directly: `commands/compile`, `commands/benchmark`, etc.
-
-`compile` always prepares first (creates eval workspace, checks out `project/`, sets
-active task) — idempotent if already done. Use `prepare` alone when you only want
-setup without building a patch yet.
-
-From the parent GSO repo: `./scripts/pydantic.sh compile …`
+From the parent gso repo: `./scripts/pydantic.sh compile …`
 
 ## Tasks
 
-| Task ID | Folder under `eval/` |
-|---------|----------------------|
-| `pydantic__pydantic-addf1f9` | `eval-pydantic-addf1f9-addf1f9/` |
-| `pydantic__pydantic-4a09447` | `eval-pydantic-4a09447-4a09447/` |
-| `pydantic__pydantic-ac9e6ee` | `eval-pydantic-ac9e6ee-ac9e6ee/` |
-| `pydantic__pydantic-c2647ab` | `eval-pydantic-c2647ab-c2647ab/` |
+| Task ID | Eval folder |
+|---------|-------------|
+| `pydantic__pydantic-addf1f9` | `eval/eval-pydantic-addf1f9-addf1f9/` |
+| `pydantic__pydantic-4a09447` | `eval/eval-pydantic-4a09447-4a09447/` |
+| `pydantic__pydantic-ac9e6ee` | `eval/eval-pydantic-ac9e6ee-ac9e6ee/` |
+| `pydantic__pydantic-c2647ab` | `eval/eval-pydantic-c2647ab-c2647ab/` |
 
-Switch tasks with `./pydantic prepare <task_id>` or just `./pydantic compile
-<task_id>`. Only the active task can be compiled/benchmarked (see `.active_task`).
+## Layout
 
-Do not edit `eval/*/baseline/` — frozen reference for the harness.
+```text
+pydantic/                     hub root — run commands here
+  pydantic                    CLI entry point
+  scripts/
+    setup.sh                  create + activate .venv
+    env.sh                    shared helpers
+    run.sh                    workflow commands
+    images.sh                 Docker image commands
+    hub.py                    task definitions + image digests
+  requirements.txt
+  .venv/                      Python env (gitignored)
+  benchmarks/*/benchmark.yaml task defs + pinned image digests
+  project/                    pydantic source — edit here
+  eval/                       per-task workspaces + results
+  artemis_results.json        latest benchmark result
+```
+
+## What to edit
+
+| Path | Role |
+|------|------|
+| `project/` | Edit pydantic source. Checked out to each task's base commit on `compile`. |
+| `eval/*/baseline/` | Frozen reference — do not edit |
+| `eval/*/output/` | Benchmark and test results |
+
+`project/` is vendored in this repo. First `compile` replaces it with a git clone
+for task switching (`project/.git/` is gitignored). Evaluation runs in Docker, not
+against your local tree.

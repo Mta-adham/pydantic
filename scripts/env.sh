@@ -1,45 +1,41 @@
 #!/usr/bin/env bash
-# Environment for the standalone pydantic benchmark project.
+# Paths and helpers for the pydantic benchmark hub.
 
-_pydantic_root() {
+pydantic_hub_root() {
     local here
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     cd "$here/.." && pwd
 }
 
-_pydantic_gso_root() {
-    local root
-    root="$(_pydantic_root)"
+pydantic_gso_root() {
+    local hub="${1:-$(pydantic_hub_root)}"
     if [[ -n "${GSO_ROOT_OVERRIDE:-}" ]]; then
         echo "${GSO_ROOT_OVERRIDE}"
         return
     fi
-    local monorepo
-    monorepo="$(cd "$root/../.." && pwd)"
-    if [[ -f "${monorepo}/pyproject.toml" && -d "${monorepo}/examples" ]]; then
-        echo "$monorepo"
-        return
-    fi
-    echo "$monorepo"
+    local parent
+    parent="$(cd "$hub/../.." && pwd)"
+    echo "$parent"
+}
+
+pydantic_export_paths() {
+    local hub
+    hub="$(pydantic_hub_root)"
+    export PYDANTIC_ROOT="$hub"
+    export GSO_ROOT="$(pydantic_gso_root "$hub")"
+    export GSO_WORKSPACE_ROOT="$hub"
+    export GSO_PROJECT_ROOT="$hub/project"
+    export GSO_SCRIPTS="${GSO_ROOT}/scripts"
 }
 
 pydantic_activate() {
-    local root
-    root="$(_pydantic_root)"
-    cd "$root"
-
-    if [[ ! -d ".venv" ]]; then
-        echo "Error: Python environment not found at ${root}/.venv" >&2
-        echo "From the pydantic hub root, run:" >&2
-        echo "  python3 -m venv .venv" >&2
-        echo "  source .venv/bin/activate" >&2
-        echo "  pip install -r requirements.txt" >&2
-        if [[ -f "${root}/../../pyproject.toml" ]]; then
-            echo "  pip install -e ../..    # gso monorepo: local harness + workflow" >&2
-        fi
+    local hub
+    hub="$(pydantic_hub_root)"
+    if [[ ! -d "$hub/.venv" ]]; then
+        echo "No .venv found. Run: source scripts/setup.sh" >&2
         exit 1
     fi
-
+    cd "$hub"
     # shellcheck disable=SC1091
     source .venv/bin/activate
     if [[ -f .env ]]; then
@@ -47,34 +43,35 @@ pydantic_activate() {
         # shellcheck disable=SC1091
         source .env
         set +a
-    elif [[ -f "${root}/../../.env" ]]; then
+    elif [[ -f "$hub/../../.env" ]]; then
         set -a
         # shellcheck disable=SC1091
-        source "${root}/../../.env"
+        source "$hub/../../.env"
         set +a
     fi
 }
 
-pydantic_export_paths() {
-    local root gso_root
-    root="$(_pydantic_root)"
-    gso_root="$(_pydantic_gso_root)"
-    export PYDANTIC_ROOT="$root"
-    export GSO_ROOT="$gso_root"
-    export GSO_WORKSPACE_ROOT="${root}"
-    export GSO_PROJECT_ROOT="${root}/project"
-    export GSO_SCRIPTS="${GSO_ROOT}/scripts"
-}
-
 pydantic_list_tasks() {
-    GSO_WORKSPACE_ROOT="${PYDANTIC_ROOT}" \
-        python3 "${PYDANTIC_ROOT}/scripts/hub.py" list
+    GSO_WORKSPACE_ROOT="${PYDANTIC_ROOT}" python3 "${PYDANTIC_ROOT}/scripts/hub.py" list
 }
 
 pydantic_task_ids() {
     pydantic_list_tasks | awk -F'\t' '{print $1}'
 }
 
-pydantic_run_py() {
-    python "${GSO_ROOT}/examples/local_patch_workflow.py" "$@"
+pydantic_workflow() {
+    PYTHONPATH="${GSO_ROOT}/examples${PYTHONPATH:+:$PYTHONPATH}" \
+        python3 "${GSO_ROOT}/examples/local_patch_workflow.py" "$@"
+}
+
+pydantic_eval_dir() {
+    local task="$1"
+    PYTHONPATH="${GSO_ROOT}/examples" python3 -c \
+        "from local_patch_workflow import workspace_dir; print(workspace_dir('${task}'))"
+}
+
+pydantic_print_status() {
+    PYTHONPATH="${GSO_ROOT}/examples" python3 -c \
+        "from local_patch_workflow import format_active_task_status; print(format_active_task_status())" \
+        2>/dev/null || true
 }
