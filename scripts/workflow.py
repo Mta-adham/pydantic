@@ -1105,13 +1105,23 @@ def sync_eval_artifacts(
     run_dir = harness_run_dir(instance_id, run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    run_report = find_run_report(run_id, model_name)
+    run_report = find_run_report(run_id, model_name, instance_id)
     if run_report and run_report.exists():
-        shutil.copy2(run_report, run_dir / "run_report.json")
+        dest = run_dir / "run_report.json"
+        if run_report.resolve() != dest.resolve():
+            shutil.copy2(run_report, dest)
 
     inst_path = instance_report_path(instance_id, run_id, model_name)
-    if inst_path.exists():
-        shutil.copy2(inst_path, run_dir / "instance_report.json")
+    if inst_path.is_file():
+        dest = run_dir / "instance_report.json"
+        if inst_path.resolve() != dest.resolve():
+            shutil.copy2(inst_path, dest)
+    else:
+        cached = cached_instance_report_path(instance_id, run_id)
+        if cached is not None:
+            dest = run_dir / "instance_report.json"
+            if cached.resolve() != dest.resolve():
+                shutil.copy2(cached, dest)
 
     return run_dir
 
@@ -1230,7 +1240,32 @@ def instance_report_path(
     )
 
 
-def find_run_report(run_id: str, model_name: str) -> Path | None:
+def cached_instance_report_path(instance_id: str, run_id: str) -> Path | None:
+    """Synced copy under eval/<task>/harness/ (survives if logs/ were elsewhere)."""
+    for base in (
+        harness_run_dir(instance_id, run_id),
+        harness_dir(instance_id),
+    ):
+        path = base / "instance_report.json"
+        if path.is_file():
+            return path
+    return None
+
+
+def cached_run_report_path(instance_id: str, run_id: str) -> Path | None:
+    for base in (
+        harness_run_dir(instance_id, run_id),
+        harness_dir(instance_id),
+    ):
+        path = base / "run_report.json"
+        if path.is_file():
+            return path
+    return None
+
+
+def find_run_report(
+    run_id: str, model_name: str, instance_id: str | None = None
+) -> Path | None:
     safe_model = model_name.replace("/", "__")
     direct = (
         gso_log_dir()
@@ -1241,22 +1276,34 @@ def find_run_report(run_id: str, model_name: str) -> Path | None:
     if direct.exists():
         return direct
     matches = list(gso_log_dir().rglob(f"*.{run_id}.report.json"))
-    return matches[0] if matches else None
+    if matches:
+        return matches[0]
+    if instance_id is not None:
+        return cached_run_report_path(instance_id, run_id)
+    return None
+
+
+def _read_instance_report_file(path: Path, instance_id: str) -> dict:
+    report = json.loads(path.read_text())
+    if instance_id not in report:
+        raise SystemExit(f"Instance {instance_id} missing from {path}")
+    return report[instance_id]
 
 
 def load_instance_report(
     instance_id: str, run_id: str, model_name: str
 ) -> dict:
     path = instance_report_path(instance_id, run_id, model_name)
-    if not path.exists():
-        raise SystemExit(
-            f"No harness report at {path}. "
-            f"Run: {harness_command_hint(instance_id, action='benchmark')}"
-        )
-    report = json.loads(path.read_text())
-    if instance_id not in report:
-        raise SystemExit(f"Instance {instance_id} missing from {path}")
-    return report[instance_id]
+    if path.is_file():
+        return _read_instance_report_file(path, instance_id)
+    cached = cached_instance_report_path(instance_id, run_id)
+    if cached is not None:
+        return _read_instance_report_file(cached, instance_id)
+    raise SystemExit(
+        f"No harness report at {path} "
+        f"(or eval harness cache). "
+        f"Run: {harness_command_hint(instance_id, action='benchmark')}"
+    )
 
 
 def run_harness(
@@ -1301,15 +1348,14 @@ def run_harness(
         "--rerun_all",
         "--verbose",
     ]
-    if pull_image:
-        harness_args.append("--pull_missing")
-    if ephemeral_image:
-        harness_args.append("--rm_image")
     cmd = [sys.executable, "-m", "gso.harness.run_evaluation", *harness_args]
+    harness_cwd = Path(
+        os.environ.get("GSO_WORKSPACE_ROOT", str(WORKSPACE_ROOT))
+    ).resolve()
     print("Running GSO harness...")
     try:
         env = os.environ.copy()
-        proc = subprocess.run(cmd, cwd=WORKSPACE_ROOT, text=True, check=False, env=env)
+        proc = subprocess.run(cmd, cwd=harness_cwd, text=True, check=False, env=env)
         if proc.returncode != 0:
             raise SystemExit(proc.returncode)
     finally:
@@ -2071,7 +2117,10 @@ def benchmark_patch(
     require_active_task(instance_id, action="benchmark")
     run_id = run_id or f"benchmark-{instance_id}"
     report_path = instance_report_path(instance_id, run_id, model_name)
-    if not reuse_report or not report_path.exists():
+    cached = cached_instance_report_path(instance_id, run_id)
+    if not reuse_report or not (
+        report_path.is_file() or cached is not None
+    ):
         run_harness(
             instance_id,
             model_name=model_name,
@@ -2098,7 +2147,10 @@ def test_patch(
     require_active_task(instance_id, action="test")
     run_id = run_id or f"test-{instance_id}"
     report_path = instance_report_path(instance_id, run_id, model_name)
-    if not reuse_report or not report_path.exists():
+    cached = cached_instance_report_path(instance_id, run_id)
+    if not reuse_report or not (
+        report_path.is_file() or cached is not None
+    ):
         run_harness(
             instance_id,
             model_name=model_name,
@@ -2131,7 +2183,7 @@ def evaluate_patch(
         ephemeral_image=ephemeral_image,
     )
 
-    run_report = find_run_report(run_id, model_name)
+    run_report = find_run_report(run_id, model_name, instance_id)
     run_output_dir = output_run_dir(instance_id, run_id)
     run_output_dir.mkdir(parents=True, exist_ok=True)
     if run_report and run_report.exists():
