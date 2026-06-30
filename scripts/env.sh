@@ -13,9 +13,7 @@ pydantic_gso_root() {
         echo "${GSO_ROOT_OVERRIDE}"
         return
     fi
-    local parent
-    parent="$(cd "$hub/../.." && pwd)"
-    echo "$parent"
+    cd "$hub/../.." && pwd
 }
 
 pydantic_export_paths() {
@@ -28,25 +26,20 @@ pydantic_export_paths() {
     export GSO_SCRIPTS="${GSO_ROOT}/scripts"
 }
 
-pydantic_activate() {
-    local hub
+# Load HF_TOKEN etc. — does not activate or require a .venv.
+pydantic_load_env() {
+    local hub gso
     hub="$(pydantic_hub_root)"
-    if [[ ! -d "$hub/.venv" ]]; then
-        echo "No .venv found. Run: source scripts/setup.sh" >&2
-        exit 1
-    fi
-    cd "$hub"
-    # shellcheck disable=SC1091
-    source .venv/bin/activate
-    if [[ -f .env ]]; then
+    gso="$(pydantic_gso_root "$hub")"
+    if [[ -f "$hub/.env" ]]; then
         set -a
         # shellcheck disable=SC1091
-        source .env
+        source "$hub/.env"
         set +a
-    elif [[ -f "$hub/../../.env" ]]; then
+    elif [[ -f "$gso/.env" ]]; then
         set -a
         # shellcheck disable=SC1091
-        source "$hub/../../.env"
+        source "$gso/.env"
         set +a
     fi
 }

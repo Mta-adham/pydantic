@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+HUB="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck disable=SC1091
+source "${HUB}/scripts/env.sh"
+
+usage() {
+    cat <<'EOF'
+Pydantic benchmark hub
+
+  commands/compile [task]       checkout project/ + build patch
+  commands/prepare [task]       setup eval workspace only
+  commands/benchmark [task]   Docker performance eval
+  commands/test [task]        correctness tests
+  commands/reset [task]         discard edits in project/
+  commands/pull-images [task]   pull pinned Docker images
+  commands/verify-images [task] verify local image digests
+  commands/pin-images [task]    pin digest in benchmark.yaml
+
+Or: ./pydantic compile|benchmark|test|... [task]
+
+Uses your current shell Python environment (activate gso or hub .venv yourself).
+EOF
+    pydantic_export_paths
+    pydantic_list_tasks 2>/dev/null | awk -F'\t' '{print "  " $1}' || true
+    exit "${1:-0}"
+}
+
+[[ $# -gt 0 ]] || usage 1
+
+case "$1" in
+    -h|--help|help) usage 0 ;;
+    compile|prepare|benchmark|test|reset)
+        exec "${HUB}/scripts/run.sh" "$@"
+        ;;
+    pull-images|verify-images|pin-images)
+        exec "${HUB}/scripts/images.sh" "$@"
+        ;;
+    *)
+        echo "Unknown command: $1" >&2
+        usage 1
+        ;;
+esac

@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/env.sh"
 
 pydantic_export_paths
-pydantic_activate
+pydantic_load_env
 
 CMD="${1:?command required}"
 shift
