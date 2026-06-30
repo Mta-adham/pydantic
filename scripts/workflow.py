@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
+import math
 import os
 import re
 import shutil
@@ -42,6 +44,7 @@ def gso_log_dir() -> Path:
 
 DOCKER_NAMESPACE = "slimshetty/gso"
 ARTEMIS_BENCHMARK_FILENAME = "artemis_results.json"
+ARTEMIS_BENCHMARK_ROBUST_FILENAME = "artemis_results_robust.json"
 ARTEMIS_TEST_FILENAME = "tests_artemis_results.json"
 _VERIFIED_PROVENANCE: dict[str, dict[str, Any]] = {}
 
@@ -1205,6 +1208,7 @@ def write_comparison_summary(
         f"  harness: {harness_run_dir(instance_id, run_id)}",
         f"  output: {output_run_dir(instance_id, run_id)}",
         f"    artemis_results.json",
+        f"    artemis_results_robust.json",
         f"    tests_artemis_results.json",
         ]
     )
@@ -1366,6 +1370,10 @@ def run_harness(
 
 def artemis_benchmark_path(instance_id: str, run_id: str) -> Path:
     return output_run_dir(instance_id, run_id) / ARTEMIS_BENCHMARK_FILENAME
+
+
+def artemis_benchmark_robust_path(instance_id: str, run_id: str) -> Path:
+    return output_run_dir(instance_id, run_id) / ARTEMIS_BENCHMARK_ROBUST_FILENAME
 
 
 def workspace_root_artemis_path(instance_id: str) -> Path:
@@ -2008,6 +2016,193 @@ def build_artemis_benchmark_payload(
     return payload
 
 
+def _harness_report_relpath(
+    instance_id: str, run_id: str, model_name: str
+) -> str:
+    path = instance_report_path(instance_id, run_id, model_name)
+    hub = hub_root()
+    try:
+        return str(path.relative_to(hub))
+    except ValueError:
+        safe_model = model_name.replace("/", "__")
+        return (
+            f"logs/run_evaluation/{run_id}/{safe_model}/"
+            f"{instance_id}/report.json"
+        )
+
+
+_VERDICT_TO_INT = {
+    "unavailable": -1,
+    "no_change": 0,
+    "no_change_near_expert": 1,
+    "slower_than_baseline": 2,
+    "improved_matches_expert": 3,
+    "improved_below_expert": 4,
+    "improved": 5,
+}
+_DIRECTION_TO_INT = {"unchanged": 0, "faster": 1, "slower": 2}
+_MODEL_NAME_TO_INT = {"local-edit": 0}
+
+
+def _task_index(instance_id: str) -> int:
+    root = benchmark_root() or hub_root()
+    runner = _runner_module()
+    if runner is not None:
+        ids = runner.list_instance_ids(root)
+        try:
+            return ids.index(instance_id)
+        except ValueError:
+            pass
+    return int(hashlib.sha256(instance_id.encode()).hexdigest()[:8], 16)
+
+
+def _run_id_numeric(run_id: str) -> int:
+    digest = int(hashlib.sha256(run_id.encode()).hexdigest()[:8], 16)
+    return digest % 10000
+
+
+def _recorded_at_numeric(recorded_at: str) -> float:
+    dt = datetime.fromisoformat(recorded_at.replace("Z", "+00:00"))
+    return round(dt.timestamp(), 6)
+
+
+def _bool_num(value: Any) -> int:
+    return int(bool(value))
+
+
+def _numericize_comparison_block(block: dict | None) -> dict:
+    if not block:
+        return {}
+    out: dict[str, int | float] = {}
+    for key, value in block.items():
+        if key == "direction":
+            out[key] = _DIRECTION_TO_INT.get(str(value), 0)
+        elif isinstance(value, bool):
+            out[key] = _bool_num(value)
+        elif isinstance(value, (int, float)):
+            out[key] = value
+    return out
+
+
+def _numericize_confidence(confidence: dict | None) -> dict:
+    if not confidence:
+        return {}
+    out: dict[str, int | float] = {}
+    for key, value in confidence.items():
+        if key in {"interpretation", "compared_to"}:
+            continue
+        if key == "tests_faster_than_baseline" and isinstance(value, str):
+            if "/" in value:
+                faster, total = value.split("/", 1)
+                out["tests_faster"] = int(faster)
+                out["tests_total"] = int(total)
+            continue
+        if isinstance(value, bool):
+            out[key] = _bool_num(value)
+        elif isinstance(value, (int, float)):
+            out[key] = value
+    return out
+
+
+def _numericize_timings(timings: dict) -> dict:
+    return {k: v for k, v in timings.items() if k != "unit"}
+
+
+def _numericize_harness_metrics(metrics: dict) -> dict:
+    out: dict[str, Any] = {}
+    for key, value in metrics.items():
+        if isinstance(value, bool):
+            out[key] = _bool_num(value)
+        elif isinstance(value, (int, float)):
+            out[key] = value
+        elif isinstance(value, dict):
+            out[key] = {
+                sk: sv
+                for sk, sv in value.items()
+                if isinstance(sv, (int, float, list))
+            }
+        else:
+            out[key] = value
+    return out
+
+
+def _finite_scalar(value: Any) -> int | float | None:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
+        return round(value, 6)
+    return None
+
+
+def _flatten_numeric_leaves(obj: Any, prefix: str = "") -> dict[str, int | float]:
+    """Flatten nested numeric data to a single level of finite scalars."""
+    flat: dict[str, int | float] = {}
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            child_prefix = f"{prefix}_{key}" if prefix else str(key)
+            flat.update(_flatten_numeric_leaves(value, child_prefix))
+        return flat
+    if isinstance(obj, list):
+        for index, value in enumerate(obj):
+            child_prefix = f"{prefix}_{index}"
+            if isinstance(value, (dict, list)):
+                flat.update(_flatten_numeric_leaves(value, child_prefix))
+            else:
+                scalar = _finite_scalar(value)
+                if scalar is not None:
+                    flat[child_prefix] = scalar
+        return flat
+    scalar = _finite_scalar(obj)
+    if scalar is not None and prefix:
+        flat[prefix] = scalar
+    return flat
+
+
+def build_artemis_benchmark_payload_numeric(
+    instance_id: str,
+    run_id: str,
+    model_name: str,
+    instance_report: dict,
+) -> dict[str, int | float]:
+    """Flat Artemis JSON: every value is a top-level finite number."""
+    parts = build_improvement_summary(instance_report, instance_id=instance_id)
+    recorded_at = datetime.now(timezone.utc).isoformat()
+    summary = parts["summary"]
+    patch = parts["patch"]
+    harness = summary.get("harness") or {}
+    nested = {
+        "instance_id": _task_index(instance_id),
+        "run_id": _run_id_numeric(run_id),
+        "model_name": _MODEL_NAME_TO_INT.get(model_name, 0),
+        "recorded_at": _recorded_at_numeric(recorded_at),
+        "code_changes": _bool_num(patch.get("code_changes")),
+        "verdict": _VERDICT_TO_INT.get(str(summary.get("verdict")), -1),
+        "runtime_s": summary.get("runtime_s") or {},
+        "vs_baseline": _numericize_comparison_block(summary.get("vs_baseline")),
+        "vs_expert": _numericize_comparison_block(summary.get("vs_expert")),
+        "confidence": _numericize_confidence(summary.get("confidence")),
+        "tests_passed": _bool_num(harness.get("tests_passed")),
+        "opt_base_passed": _bool_num(harness.get("opt_base_passed")),
+        "opt_commit_passed": _bool_num(harness.get("opt_commit_passed")),
+        "per_test": [
+            {
+                "test_index": row["test_index"],
+                "runtime_s": row.get("runtime_s") or {},
+                "vs_baseline": _numericize_comparison_block(row.get("vs_baseline")),
+                "vs_expert": _numericize_comparison_block(row.get("vs_expert")),
+            }
+            for row in parts["per_test"]
+        ],
+        "timings": _numericize_timings(_export_timings(instance_report)),
+        "harness_metrics": _numericize_harness_metrics(
+            _export_harness_metrics(instance_report)
+        ),
+    }
+    return _flatten_numeric_leaves(nested)
+
+
 def build_artemis_test_payload(
     instance_id: str,
     run_id: str,
@@ -2068,21 +2263,27 @@ def write_benchmark_json(
     instance_report = load_instance_report(instance_id, run_id, model_name)
     run_dir = output_run_dir(instance_id, run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
-    out = artemis_benchmark_path(instance_id, run_id)
-    payload = build_artemis_benchmark_payload(
+    robust_out = artemis_benchmark_robust_path(instance_id, run_id)
+    numeric_out = artemis_benchmark_path(instance_id, run_id)
+    robust_payload = build_artemis_benchmark_payload(
         instance_id, run_id, model_name, instance_report
     )
-    out.write_text(json.dumps(payload, indent=2))
-    print(f"Wrote benchmark results: {out}")
+    numeric_payload = build_artemis_benchmark_payload_numeric(
+        instance_id, run_id, model_name, instance_report
+    )
+    robust_out.write_text(json.dumps(robust_payload, indent=2))
+    numeric_out.write_text(json.dumps(numeric_payload, indent=2))
+    print(f"Wrote benchmark results (robust): {robust_out}")
+    print(f"Wrote benchmark results (numeric): {numeric_out}")
     root_copy = workspace_root_artemis_path(instance_id)
-    shutil.copy2(out, root_copy)
+    shutil.copy2(numeric_out, root_copy)
     copy_label = "hub root" if benchmark_root() else "workspace root"
-    print(f"Wrote benchmark results ({copy_label}): {root_copy}")
+    print(f"Wrote benchmark results ({copy_label}, numeric): {root_copy}")
     finalize_run_outputs(instance_id, run_id, model_name)
     summary_path = output_run_dir(instance_id, run_id) / "summary.txt"
     if summary_path.exists():
         print(f"Wrote comparison summary: {summary_path}")
-    return out
+    return numeric_out
 
 
 def write_test_json(

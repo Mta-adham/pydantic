@@ -48,7 +48,14 @@ Same via `./pydantic compile …` etc.
 
 `compile` includes prepare — you don't need `prepare` to switch tasks.
 
-**Results:** `eval/active/output/summary.txt` or `artemis_results.json`
+**Results:** `eval/active/output/artemis_results.json` (all-numeric metrics),
+`eval/active/output/artemis_results_robust.json` (full strings + provenance),
+or hub-root `artemis_results.json` (numeric copy from latest benchmark).
+
+Numeric `artemis_results.json` is a **flat** map of metric name → finite number
+(e.g. `runtime_s_baseline`, `vs_baseline_speedup`, `per_test_0_speedup`). No
+nested objects. `instance_id` = task index, `run_id` = 4-digit code,
+`recorded_at` = Unix timestamp, booleans as `0`/`1`.
 
 ## Tasks
 
