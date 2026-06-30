@@ -20,7 +20,7 @@ Pydantic benchmark hub
 
 Or: ./pydantic compile|benchmark|test|... [task]
 
-Uses your current shell Python environment (activate gso or hub .venv yourself).
+Uses your current shell Python environment (pip install -r requirements.txt).
 EOF
     pydantic_export_paths
     pydantic_list_tasks 2>/dev/null | awk -F'\t' '{print "  " $1}' || true

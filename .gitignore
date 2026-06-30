@@ -5,6 +5,9 @@ eval/
 # Latest benchmark copy (regenerated each run)
 artemis_results.json
 
+# Harness logs
+logs/
+
 # Local git metadata for task switching (vendored files are tracked above)
 project/.git/
 

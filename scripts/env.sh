@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Paths and helpers for the pydantic benchmark hub.
+# Paths and helpers for the pydantic benchmark hub (self-contained).
 
 pydantic_hub_root() {
     local here
@@ -7,39 +7,33 @@ pydantic_hub_root() {
     cd "$here/.." && pwd
 }
 
-pydantic_gso_root() {
-    local hub="${1:-$(pydantic_hub_root)}"
-    if [[ -n "${GSO_ROOT_OVERRIDE:-}" ]]; then
-        echo "${GSO_ROOT_OVERRIDE}"
-        return
-    fi
-    cd "$hub/../.." && pwd
-}
-
 pydantic_export_paths() {
     local hub
     hub="$(pydantic_hub_root)"
     export PYDANTIC_ROOT="$hub"
-    export GSO_ROOT="$(pydantic_gso_root "$hub")"
+    export GSO_ROOT="$hub"
     export GSO_WORKSPACE_ROOT="$hub"
     export GSO_PROJECT_ROOT="$hub/project"
-    export GSO_SCRIPTS="${GSO_ROOT}/scripts"
 }
 
-# Load HF_TOKEN etc. — does not activate or require a .venv.
+pydantic_workflow_py() {
+    local hub="${PYDANTIC_ROOT:-$(pydantic_hub_root)}"
+    local wf="$hub/scripts/workflow.py"
+    if [[ ! -f "$wf" ]]; then
+        echo "workflow not found: $wf" >&2
+        return 1
+    fi
+    echo "$wf"
+}
+
+# Load HF_TOKEN etc. from hub .env only.
 pydantic_load_env() {
-    local hub gso
+    local hub
     hub="$(pydantic_hub_root)"
-    gso="$(pydantic_gso_root "$hub")"
     if [[ -f "$hub/.env" ]]; then
         set -a
         # shellcheck disable=SC1091
         source "$hub/.env"
-        set +a
-    elif [[ -f "$gso/.env" ]]; then
-        set -a
-        # shellcheck disable=SC1091
-        source "$gso/.env"
         set +a
     fi
 }
@@ -53,18 +47,33 @@ pydantic_task_ids() {
 }
 
 pydantic_workflow() {
-    PYTHONPATH="${GSO_ROOT}/examples${PYTHONPATH:+:$PYTHONPATH}" \
-        python3 "${GSO_ROOT}/examples/local_patch_workflow.py" "$@"
+    local wf
+    wf="$(pydantic_workflow_py)"
+    export GSO_ROOT="${PYDANTIC_ROOT}"
+    export GSO_WORKSPACE_ROOT="${PYDANTIC_ROOT}"
+    PYTHONPATH="$(dirname "$wf")${PYTHONPATH:+:$PYTHONPATH}" python3 "$wf" "$@"
+}
+
+pydantic_workflow_eval() {
+    local py_expr="$1"
+    local wf
+    wf="$(pydantic_workflow_py)"
+    export GSO_ROOT="${PYDANTIC_ROOT}"
+    export GSO_WORKSPACE_ROOT="${PYDANTIC_ROOT}"
+    PYTHONPATH="$(dirname "$wf")" python3 -c "
+import importlib.util
+spec = importlib.util.spec_from_file_location('gso_workflow', '${wf}')
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+${py_expr}
+"
 }
 
 pydantic_eval_dir() {
     local task="$1"
-    PYTHONPATH="${GSO_ROOT}/examples" python3 -c \
-        "from local_patch_workflow import workspace_dir; print(workspace_dir('${task}'))"
+    pydantic_workflow_eval "print(m.workspace_dir('${task}'))"
 }
 
 pydantic_print_status() {
-    PYTHONPATH="${GSO_ROOT}/examples" python3 -c \
-        "from local_patch_workflow import format_active_task_status; print(format_active_task_status())" \
-        2>/dev/null || true
+    pydantic_workflow_eval "print(m.format_active_task_status())" 2>/dev/null || true
 }

@@ -38,12 +38,11 @@ PREPARE_EXTRA=()
 run_prepare() {
     local task="$1"
     local quiet="${2:-0}"
+    local args=(setup "$task" "${PREPARE_EXTRA[@]}")
     if [[ "$quiet" == "1" ]]; then
-        GSO_QUIET_PREPARE=1 GSO_WORKSPACE_ROOT="${GSO_WORKSPACE_ROOT}" \
-            "${GSO_SCRIPTS}/compile_patch.sh" "$task" --prepare "${PREPARE_EXTRA[@]}"
+        GSO_QUIET_PREPARE=1 pydantic_workflow "${args[@]}"
     else
-        GSO_WORKSPACE_ROOT="${GSO_WORKSPACE_ROOT}" \
-            "${GSO_SCRIPTS}/compile_patch.sh" "$task" --prepare "${PREPARE_EXTRA[@]}"
+        pydantic_workflow "${args[@]}"
     fi
 }
 
@@ -74,28 +73,26 @@ for task in "${TASK_IDS[@]}"; do
             ;;
         compile)
             run_prepare "$task" 1 || { failures+=("$task"); continue; }
-            GSO_WORKSPACE_ROOT="${GSO_WORKSPACE_ROOT}" \
-                "${GSO_SCRIPTS}/compile_patch.sh" "$task" || failures+=("$task")
+            pydantic_workflow patch "$task" \
+                --model-name local-edit \
+                --placeholder-on-unchanged || failures+=("$task")
             ;;
         benchmark)
-            if GSO_WORKSPACE_ROOT="${GSO_WORKSPACE_ROOT}" \
-                "${GSO_SCRIPTS}/benchmark_patches.sh" "$task" "${EXTRA[@]}"; then
+            if pydantic_workflow benchmark "$task" "${EXTRA[@]}"; then
                 show_summary "$task"
             else
                 failures+=("$task")
             fi
             ;;
         test)
-            if GSO_WORKSPACE_ROOT="${GSO_WORKSPACE_ROOT}" \
-                "${GSO_SCRIPTS}/test_patches.sh" "$task" "${EXTRA[@]}"; then
+            if pydantic_workflow test "$task" "${EXTRA[@]}"; then
                 show_summary "$task"
             else
                 failures+=("$task")
             fi
             ;;
         reset)
-            GSO_WORKSPACE_ROOT="${GSO_WORKSPACE_ROOT}" \
-                GSO_PROJECT_ROOT="${GSO_PROJECT_ROOT}" \
+            GSO_PROJECT_ROOT="${GSO_PROJECT_ROOT}" \
                 pydantic_workflow reset "$task" || failures+=("$task")
             ;;
         *)

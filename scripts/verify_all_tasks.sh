@@ -9,7 +9,7 @@ source "${SCRIPT_DIR}/env.sh"
 pydantic_export_paths
 cd "${HUB_ROOT}"
 
-PY="${PYDANTIC_ROOT}/.venv/bin/python3"
+PY="${PY:-python3}"
 export GSO_WORKSPACE_ROOT="${PYDANTIC_ROOT}"
 export GSO_PROJECT_ROOT="${PYDANTIC_ROOT}/project"
 
@@ -30,28 +30,29 @@ check() {
 
 verify_task_state() {
     local iid="$1"
-    "${PY}" - "${iid}" <<'PY'
-import json, subprocess, sys
-sys.path.insert(0, f"{__import__('os').environ['GSO_ROOT']}/examples")
-from local_patch_workflow import (
-    benchmark_root, project_commit_matches_task, read_active_instance_id, workspace_dir
-)
+    "${PY}" - "${iid}" "${PYDANTIC_ROOT}/scripts/workflow.py" <<'PY'
+import importlib.util, json, subprocess, sys
 from pathlib import Path
 
+wf = sys.argv[2]
+spec = importlib.util.spec_from_file_location("gso_workflow", wf)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
 iid = sys.argv[1]
-root = benchmark_root()
-active = read_active_instance_id()
+root = m.benchmark_root()
+active = m.read_active_instance_id()
 if active != iid:
     print(f"active task {active!r} != {iid!r}")
     sys.exit(1)
-if not project_commit_matches_task(iid):
+if not m.project_commit_matches_task(iid):
     print("project/ commit mismatch")
     sys.exit(1)
 link = root / "eval" / "active"
 if not link.is_symlink():
     print("eval/active is not a symlink")
     sys.exit(1)
-meta = json.loads((workspace_dir(iid) / "metadata.json").read_text())
+meta = json.loads((m.workspace_dir(iid) / "metadata.json").read_text())
 if meta.get("instance_id") != iid:
     print("metadata instance_id mismatch")
     sys.exit(1)

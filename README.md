@@ -1,21 +1,20 @@
 # Pydantic optimization benchmark
 
-Digest-pinned benchmark hub for pydantic GSO tasks. Edit code in `project/`, run
-evaluation in Docker.
+Self-contained, digest-pinned benchmark hub for pydantic GSO tasks. Edit code in
+`project/`, run evaluation in Docker.
 
 ## Setup
 
-From the parent gso repo (recommended):
-
 ```bash
-cd gso
-uv venv && source .venv/bin/activate && uv sync
-cd repos/pydantic
+git clone git@github.com:Mta-adham/pydantic.git
+cd pydantic
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-Or optional hub-local env: `source scripts/setup.sh`
+Optional: `source scripts/setup.sh` (creates `.venv` and installs deps).
 
-**Requires:** Python 3.12+, Docker, `HF_TOKEN` in `gso/.env`
+**Requires:** Python 3.12+, Docker, `HF_TOKEN` in `.env` (hub root)
 
 Commands use **whatever Python environment is active** in your shell.
 
@@ -66,9 +65,14 @@ Same via `./pydantic compile …` etc.
 pydantic/
   commands/          compile, benchmark, test, …
   pydantic           same as commands/pydantic
+  scripts/           workflow, env, hub helpers
   project/           edit pydantic source here
   benchmarks/        task defs + pinned digests
   eval/              per-task workspaces + results
+  logs/              harness logs (created on benchmark/test)
 ```
 
 Do not edit `eval/*/baseline/`. Evaluation runs in Docker, not locally.
+
+All scripts and workflow logic live inside this repo. The only external runtime
+dependency is the `gsobench` Python package (installed via `requirements.txt`).

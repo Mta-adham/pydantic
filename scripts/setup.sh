@@ -22,14 +22,12 @@ echo "=== setup (${ROOT}) ==="
 if command -v uv &>/dev/null; then
     uv venv .venv --python 3.12
     uv pip install -r requirements.txt
-    [[ -f ../../pyproject.toml ]] && uv pip install -e ../..
 else
     PYTHON="${PYTHON:-python3.12}"
     command -v "$PYTHON" &>/dev/null || PYTHON=python3
     "$PYTHON" -m venv .venv
     .venv/bin/python -m pip install --upgrade pip
     .venv/bin/pip install -r requirements.txt
-    [[ -f ../../pyproject.toml ]] && .venv/bin/pip install -e ../..
 fi
 
 .venv/bin/python -c "import gso, yaml; print('OK')"
