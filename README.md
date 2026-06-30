@@ -25,7 +25,7 @@ TASK=pydantic__pydantic-4a09447
 
 commands/pull-images $TASK
 commands/compile  $TASK
-# edit project/pydantic/*.py
+# edit the file(s) for this task under project/ (see Tasks table)
 commands/compile  $TASK
 commands/benchmark $TASK
 commands/test $TASK --from-benchmark
@@ -52,12 +52,14 @@ Same via `./pydantic compile …` etc.
 
 ## Tasks
 
-| Task ID |
-|---------|
-| `pydantic__pydantic-addf1f9` |
-| `pydantic__pydantic-4a09447` |
-| `pydantic__pydantic-ac9e6ee` |
-| `pydantic__pydantic-c2647ab` |
+Edit the listed file(s) under `project/` for each task.
+
+| Task ID | API | File(s) to optimize |
+|---------|-----|---------------------|
+| `pydantic__pydantic-addf1f9` | `BaseModel.__setattr__` | `project/pydantic/main.py` |
+| `pydantic__pydantic-4a09447` | `GenericModel.__concrete_name__` | `project/pydantic/generics.py` |
+| `pydantic__pydantic-ac9e6ee` | `TypeAdapter.validate_python` | `project/pydantic/_internal/_std_types_schema.py`, `project/pydantic/json_schema.py` |
+| `pydantic__pydantic-c2647ab` | `TypeAdapter.validate_strings` | `project/pydantic/type_adapter.py`, `project/pydantic/_internal/_mock_val_ser.py`, `project/pydantic/_internal/_namespace_utils.py` |
 
 ## Layout
 
