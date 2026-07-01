@@ -35,6 +35,28 @@ def benchmark_def_path(root: Path, instance_id: str) -> Path:
     return benchmarks_dir(root) / benchmark_slug(instance_id) / "benchmark.yaml"
 
 
+def gso_task_id_path(root: Path | None = None) -> Path:
+    return (root or hub_root()) / ".gso_task_id"
+
+
+def read_gso_task_instance_id(root: Path | None = None) -> str | None:
+    path = gso_task_id_path(root)
+    if not path.is_file():
+        return None
+    data = yaml.safe_load(path.read_text())
+    if isinstance(data, dict) and data.get("instance_id"):
+        return str(data["instance_id"])
+    return None
+
+
+def sync_gso_task_id(root: Path, instance_id: str) -> Path:
+    """Write .gso_task_id from benchmarks/<slug>/benchmark.yaml."""
+    defn = load_benchmark_def(root, instance_id)
+    path = gso_task_id_path(root)
+    path.write_text(yaml.safe_dump(defn, sort_keys=False, default_flow_style=False))
+    return path
+
+
 def list_instance_ids(root: Path | None = None) -> list[str]:
     """All instance IDs from benchmarks/*/benchmark.yaml (sorted)."""
     root = root or hub_root()
@@ -55,6 +77,11 @@ def list_instance_ids(root: Path | None = None) -> list[str]:
 def load_benchmark_def(root: Path, instance_id: str) -> dict[str, Any]:
     path = benchmark_def_path(root, instance_id)
     if not path.exists():
+        task_path = gso_task_id_path(root)
+        if task_path.is_file():
+            data = yaml.safe_load(task_path.read_text())
+            if isinstance(data, dict) and data.get("instance_id") == instance_id:
+                return data
         raise SystemExit(
             f"No benchmark definition for {instance_id} at {path}\n"
             "Each eval must have benchmarks/<slug>/benchmark.yaml with a pinned digest."

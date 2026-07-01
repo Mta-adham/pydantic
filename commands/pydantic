@@ -9,16 +9,17 @@ usage() {
     cat <<'EOF'
 Pydantic benchmark hub
 
-  commands/compile [task]       checkout project/ + build patch (active task if omitted)
-  commands/prepare [task]       setup eval workspace only (active task if omitted)
-  commands/benchmark [task]     Docker performance eval (active task if omitted)
-  commands/test [task]          correctness tests (active task if omitted)
-  commands/reset [task]         discard edits in project/ (active task if omitted)
-  commands/pull-images [task]   pull pinned Docker images
-  commands/verify-images [task] verify local image digests
-  commands/pin-images [task]    pin digest in benchmark.yaml
+  ./compile|benchmark|test [task]   Artemis entrypoints (active task if omitted)
+  commands/compile [task]           same as ./compile
+  commands/prepare [task]           setup eval workspace only
+  commands/benchmark [task]         GSO Docker performance eval
+  commands/test [task]              GSO correctness tests
+  commands/reset [task]             discard edits in project/
+  commands/pull-images [task]       pull pinned GSO Docker images
+  commands/verify-images [task]     verify local image digests
+  commands/pin-images [task]        pin digest in benchmark.yaml
 
-Or: ./pydantic compile|benchmark|test|... [task]
+Or: ./compile|benchmark|test|... [task]
 
 Uses your current shell Python environment (pip install -r requirements.txt).
 EOF

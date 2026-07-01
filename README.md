@@ -1,7 +1,8 @@
-# Pydantic optimization benchmark
+# Pydantic GSO optimization benchmark
 
-Self-contained, digest-pinned benchmark hub for pydantic GSO tasks. Edit code in
-`project/`, run evaluation in Docker.
+Artemis-importable repo for pydantic GSO tasks. **Edit only `project/`** — evaluation
+uses the standard [GSO harness](https://github.com/gso-bench/gso) and public Docker
+images (`slimshetty/gso:...`).
 
 ## Setup
 
@@ -12,54 +13,36 @@ python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Optional: `source scripts/setup.sh` (creates `.venv` and installs deps).
-
-**Requires:** Python 3.12+, Docker, `HF_TOKEN` in `.env` (hub root)
-
-Commands use **whatever Python environment is active** in your shell.
+**Requires:** Python 3.12+, Docker, `HF_TOKEN` in `.env` (first-time dataset fetch only)
 
 ## Workflow
 
 ```bash
-TASK=pydantic__pydantic-4a09447
-
-commands/pull-images $TASK
-commands/compile  $TASK          # sets active task
-# edit the file(s) for this task under project/ (see Tasks table)
-commands/compile               # uses active task
-commands/benchmark             # uses active task
-commands/test --from-benchmark # uses active task
+./compile pydantic__pydantic-4a09447   # sets .gso_task_id + builds patch
+# edit project/pydantic/*.py (see Tasks table)
+./compile                              # rebuild patch (active task)
+./benchmark                            # GSO harness → artemis_results.json
+./test --from-benchmark                # correctness from benchmark report
 ```
 
-Same via `./pydantic compile …` etc.
+`commands/compile` and `./pydantic compile` are equivalent wrappers.
 
 ## Commands
 
 | Command | What it does |
 |---------|----------------|
-| `commands/compile [task]` | Checkout `project/` + build `patch.diff` |
-| `commands/prepare [task]` | Setup eval workspace only |
-| `commands/benchmark [task]` | Docker performance eval |
-| `commands/test [task]` | Correctness tests (`--from-benchmark`) |
+| `./compile [task]` | Sync `project/` + build `patch.diff` |
+| `./benchmark [task]` | GSO Docker perf eval → `artemis_results.json` |
+| `./test [task]` | Correctness (`--from-benchmark` recommended) |
 | `commands/reset [task]` | Restore `project/` from baseline |
-| `commands/pull-images [task]` | Pull pinned Docker images |
-| `commands/verify-images [task]` | Check image digests |
-| `commands/pin-images [task]` | Pin digest in `benchmark.yaml` |
+| `commands/pull-images [task]` | Pull pinned GSO eval images |
 
-`compile` includes prepare — you don't need `prepare` to switch tasks.
+Omit the task ID to use the active task (`.gso_task_id`).
 
-**Results:** `eval/active/output/artemis_results.json` (all-numeric metrics),
-`eval/active/output/artemis_results_robust.json` (full strings + provenance),
-or hub-root `artemis_results.json` (numeric copy from latest benchmark).
-
-Numeric `artemis_results.json` is a **flat** map of metric name → finite number
-(e.g. `runtime_s_baseline`, `vs_baseline_speedup`, `per_test_0_speedup`). No
-nested objects. `instance_id` = task index, `run_id` = 4-digit code,
-`recorded_at` = Unix timestamp, booleans as `0`/`1`.
+**Results:** `artemis_results.json` at repo root (flat numeric metrics) and
+`eval/active/output/` (full reports).
 
 ## Tasks
-
-Edit the listed file(s) under `project/` for each task.
 
 | Task ID | API | File(s) to optimize |
 |---------|-----|---------------------|
@@ -72,16 +55,16 @@ Edit the listed file(s) under `project/` for each task.
 
 ```text
 pydantic/
-  commands/          compile, benchmark, test, …
-  pydantic           same as commands/pydantic
-  scripts/           workflow, env, hub helpers
-  project/           edit pydantic source here
-  benchmarks/        task defs + pinned digests
-  eval/              per-task workspaces (baseline/, expert/, output/)
-  logs/              harness logs (created on benchmark/test)
+  project/           edit pydantic source here (agent-visible)
+  compile            build patch from project/ edits
+  benchmark          GSO harness performance eval
+  test               GSO harness correctness eval
+  .gso_task_id       active GSO task + pinned eval image digest
+  scripts/           harness glue (workflow, env, hub)
+  benchmarks/        per-task GSO image pins (benchmark.yaml)
+  eval/              generated workspaces (gitignored)
+  logs/              harness logs (gitignored)
 ```
 
-Do not edit `eval/*/baseline/` or `eval/*/expert/`. Evaluation runs in Docker, not locally.
-
-All scripts and workflow logic live inside this repo. The only external runtime
-dependency is the `gsobench` Python package (installed via `requirements.txt`).
+Do not edit `eval/*/baseline/`. Expert grading runs inside GSO's Docker images, not
+in this repo.

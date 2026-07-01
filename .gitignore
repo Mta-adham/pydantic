@@ -1,9 +1,11 @@
-# Per-task eval workspaces and active-task pointer
+# Per-task eval workspaces (generated at run time)
 eval/
+
+# Legacy active-task pointer (prefer .gso_task_id)
 .active_task
 
-# Task definitions (local; fetched or generated per setup)
-benchmarks/
+# Cached HuggingFace instance payloads (benchmark defs are tracked)
+benchmarks/**/instance.json
 
 # Latest benchmark copy (regenerated each run)
 artemis_results.json

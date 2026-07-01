@@ -30,7 +30,7 @@ if [[ ${#TASK_IDS[@]} -eq 0 ]]; then
             active="$(pydantic_active_task_id)"
             if [[ -z "$active" ]]; then
                 echo "No active task. Prepare one first, e.g.:" >&2
-                echo "  ./pydantic compile pydantic__pydantic-4a09447" >&2
+                echo "  ./compile pydantic__pydantic-4a09447" >&2
                 exit 1
             fi
             TASK_IDS=("$active")
