@@ -77,3 +77,7 @@ pydantic_eval_dir() {
 pydantic_print_status() {
     pydantic_workflow_eval "print(m.format_active_task_status())" 2>/dev/null || true
 }
+
+pydantic_active_task_id() {
+    pydantic_workflow_eval "aid = m.read_active_instance_id(); print(aid or '')"
+}

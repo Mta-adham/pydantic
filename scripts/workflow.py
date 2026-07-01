@@ -507,12 +507,15 @@ def print_benchmark_hub_edit_hints(instance_id: str, paths: list[str]) -> None:
     proj = project_root()
     if not proj or not benchmark_root():
         return
+    root = workspace_dir(instance_id)
     print(format_active_task_status())
     print("Edit the pydantic project (1:1 with this eval + docker image):")
     print(f"  project: {proj}")
     print(f"  docker:  slimshetty/gso:gso.eval.x86_64.{instance_id.lower()}")
     for path in paths:
         print(f"  edit:    project/{path}")
+    if (root / "expert").is_dir():
+        print(f"  expert:  {root / 'expert'}  (reference expert optimization)")
 
 
 def metadata_path(instance_id: str) -> Path:
@@ -573,14 +576,12 @@ def clone_repo(instance, dest: Path) -> None:
     run(["git", "checkout", instance.base_commit], cwd=dest)
 
 
-def checkout_project_at_commit(instance, project_dir: Path) -> None:
-    if not is_git_work_tree(project_dir):
-        raise SystemExit(
-            f"Not a git repository: {project_dir}\n"
-            f"Run {prepare_command_hint()} to initialize it."
-        )
-    commit = instance.base_commit.strip()
-    print(f"Checking out {instance.repo} @ {commit[:12]}...")
+def _checkout_git_commit(
+    project_dir: Path, commit: str, *, label: str | None = None
+) -> None:
+    commit = commit.strip()
+    if label:
+        print(f"Checking out {label} @ {commit[:12]}...")
 
     def try_checkout() -> bool:
         proc = subprocess.run(
@@ -609,6 +610,56 @@ def checkout_project_at_commit(instance, project_dir: Path) -> None:
         )
 
 
+def checkout_project_at_commit(instance, project_dir: Path) -> None:
+    if not is_git_work_tree(project_dir):
+        raise SystemExit(
+            f"Not a git repository: {project_dir}\n"
+            f"Run {prepare_command_hint()} to initialize it."
+        )
+    _checkout_git_commit(project_dir, instance.base_commit, label=instance.repo)
+
+
+def populate_expert_dir(instance, root: Path, rel_files: list[str]) -> list[str]:
+    """Copy task files at opt_commit into eval/<task>/expert/ for reference."""
+    expert_dir = root / "expert"
+    expert_dir.mkdir(parents=True, exist_ok=True)
+    expert_src = root / ".expert_src"
+    try:
+        if expert_src.exists():
+            shutil.rmtree(expert_src)
+        print(f"Materializing expert/ @ {instance.opt_commit[:12]}...")
+        clone_repo(instance, expert_src)
+        _checkout_git_commit(expert_src, instance.opt_commit)
+        copied: list[str] = []
+        for rel_path in rel_files:
+            src = expert_src / rel_path
+            if not src.is_file():
+                print(f"Warning: expert file missing: {rel_path}")
+                continue
+            dst = expert_dir / rel_path
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            copied.append(rel_path)
+        if copied:
+            print(f"Wrote expert/: {expert_dir} ({len(copied)} file(s))")
+        return copied
+    finally:
+        shutil.rmtree(expert_src, ignore_errors=True)
+
+
+def _ensure_expert_dir(instance, root: Path) -> None:
+    meta_path = root / "metadata.json"
+    if not meta_path.is_file():
+        return
+    expert_dir = root / "expert"
+    if expert_dir.is_dir() and any(expert_dir.rglob("*")):
+        return
+    meta = json.loads(meta_path.read_text())
+    rel_files = meta.get("files") or []
+    if rel_files:
+        populate_expert_dir(instance, root, rel_files)
+
+
 def setup_workspace(
     instance_id: str,
     files: list[str] | None = None,
@@ -622,6 +673,7 @@ def setup_workspace(
     if root.exists() and not force:
         if shared_project:
             activate_task_for_editing(instance_id, checkout=True)
+            _ensure_expert_dir(instance, root)
             meta_paths: list[str] = []
             meta_path = metadata_path(instance_id)
             if meta_path.exists():
@@ -704,10 +756,13 @@ def setup_workspace(
     if not copied:
         raise SystemExit("No files were copied into baseline/.")
 
+    populate_expert_dir(instance, root, copied)
+
     meta = {
         "instance_id": instance.instance_id,
         "repo": instance.repo,
         "base_commit": instance.base_commit,
+        "opt_commit": instance.opt_commit,
         "api": instance.api,
         "files": copied,
         "created_at": datetime.now(timezone.utc).isoformat(),

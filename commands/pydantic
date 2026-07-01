@@ -9,11 +9,11 @@ usage() {
     cat <<'EOF'
 Pydantic benchmark hub
 
-  commands/compile [task]       checkout project/ + build patch
-  commands/prepare [task]       setup eval workspace only
-  commands/benchmark [task]   Docker performance eval
-  commands/test [task]        correctness tests
-  commands/reset [task]         discard edits in project/
+  commands/compile [task]       checkout project/ + build patch (active task if omitted)
+  commands/prepare [task]       setup eval workspace only (active task if omitted)
+  commands/benchmark [task]     Docker performance eval (active task if omitted)
+  commands/test [task]          correctness tests (active task if omitted)
+  commands/reset [task]         discard edits in project/ (active task if omitted)
   commands/pull-images [task]   pull pinned Docker images
   commands/verify-images [task] verify local image digests
   commands/pin-images [task]    pin digest in benchmark.yaml

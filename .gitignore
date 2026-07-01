@@ -2,6 +2,9 @@
 eval/
 .active_task
 
+# Task definitions (local; fetched or generated per setup)
+benchmarks/
+
 # Latest benchmark copy (regenerated each run)
 artemis_results.json
 

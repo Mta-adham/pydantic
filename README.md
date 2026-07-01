@@ -24,11 +24,11 @@ Commands use **whatever Python environment is active** in your shell.
 TASK=pydantic__pydantic-4a09447
 
 commands/pull-images $TASK
-commands/compile  $TASK
+commands/compile  $TASK          # sets active task
 # edit the file(s) for this task under project/ (see Tasks table)
-commands/compile  $TASK
-commands/benchmark $TASK
-commands/test $TASK --from-benchmark
+commands/compile               # uses active task
+commands/benchmark             # uses active task
+commands/test --from-benchmark # uses active task
 ```
 
 Same via `./pydantic compile …` etc.
@@ -77,11 +77,11 @@ pydantic/
   scripts/           workflow, env, hub helpers
   project/           edit pydantic source here
   benchmarks/        task defs + pinned digests
-  eval/              per-task workspaces + results
+  eval/              per-task workspaces (baseline/, expert/, output/)
   logs/              harness logs (created on benchmark/test)
 ```
 
-Do not edit `eval/*/baseline/`. Evaluation runs in Docker, not locally.
+Do not edit `eval/*/baseline/` or `eval/*/expert/`. Evaluation runs in Docker, not locally.
 
 All scripts and workflow logic live inside this repo. The only external runtime
 dependency is the `gsobench` Python package (installed via `requirements.txt`).

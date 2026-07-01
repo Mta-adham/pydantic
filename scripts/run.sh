@@ -25,7 +25,20 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ${#TASK_IDS[@]} -eq 0 ]]; then
-    mapfile -t TASK_IDS < <(pydantic_task_ids)
+    case "$COMMAND" in
+        compile|benchmark|test|prepare|reset)
+            active="$(pydantic_active_task_id)"
+            if [[ -z "$active" ]]; then
+                echo "No active task. Prepare one first, e.g.:" >&2
+                echo "  ./pydantic compile pydantic__pydantic-4a09447" >&2
+                exit 1
+            fi
+            TASK_IDS=("$active")
+            ;;
+        *)
+            mapfile -t TASK_IDS < <(pydantic_task_ids)
+            ;;
+    esac
 fi
 if [[ ${#TASK_IDS[@]} -eq 0 ]]; then
     echo "No tasks in ${PYDANTIC_ROOT}/benchmarks/" >&2
