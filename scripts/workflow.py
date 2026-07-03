@@ -900,9 +900,25 @@ def write_comparison_summary(
             return "n/a"
         return yes if value else no
 
-    run_ok = harness.get("tests_passed")
-    if run_ok is None:
-        run_ok = instance_report.get("test_passed")
+    tests_passed = harness.get("tests_passed")
+    tests_total = harness.get("tests_total")
+    if tests_passed is None and instance_report.get("test_passed") is not None:
+        tests_total = tests_total or len(
+            (instance_report.get("time_stats") or {})
+            .get("per_test_means", {})
+            .get("base", [])
+            or instance_report.get("base_times")
+            or []
+        )
+        tests_passed = (
+            tests_total if instance_report.get("test_passed") else 0
+        )
+    run_ok = (
+        tests_total is not None
+        and tests_passed is not None
+        and tests_total > 0
+        and tests_passed == tests_total
+    )
 
     provenance = build_provenance(
         instance_id, datetime.now(timezone.utc).isoformat()
@@ -955,6 +971,9 @@ def write_comparison_summary(
         f"  {confidence.get('interpretation', '')}",
         "",
         "Harness",
+        f"  tests:                {tests_passed}/{tests_total} passed"
+        if tests_total is not None
+        else f"  tests:                n/a",
         f"  benchmark_completed:  {_harness_status(run_ok, yes='yes', no='no — run failed or incomplete')}",
         f"  beat_baseline:        {_format_baseline_opt_line(harness.get('opt_base_passed'), vs_base.get('percent_faster'))}",
         f"  matches_expert:       {_format_expert_opt_line(harness.get('opt_commit_passed'), vs_expert.get('parity_percent'))}",
@@ -1706,7 +1725,14 @@ def build_improvement_summary(
     )
 
     tests_faster = sum(1 for s in patch_base_speedups if s and s > 1.0)
-    tests_total = len(patch_base_speedups)
+    per_test_means = time_stats.get("per_test_means") or {}
+    tests_total = (
+        len(patch_base_speedups)
+        or len(per_test_means.get("base") or [])
+        or len(instance_report.get("base_times") or [])
+    )
+    all_tests_ok = bool(instance_report.get("test_passed"))
+    tests_passed_count = tests_total if all_tests_ok and tests_total else 0
     headline = _improvement_headline(
         gm_patch_base,
         gm_patch_commit,
@@ -1763,7 +1789,8 @@ def build_improvement_summary(
             ),
             "confidence": confidence_block,
             "harness": {
-                "tests_passed": instance_report.get("test_passed"),
+                "tests_passed": tests_passed_count,
+                "tests_total": tests_total,
                 "opt_base_passed": instance_report.get("opt_base"),
                 "opt_commit_passed": instance_report.get("opt_commit"),
             },
@@ -1877,9 +1904,8 @@ def build_artemis_benchmark_payload_numeric(
         "recorded_at": _recorded_at_numeric(recorded_at),
         "code_changes": _bool_num(patch.get("code_changes")),
         "verdict": _VERDICT_TO_INT.get(str(summary.get("verdict")), -1),
-        "tests_passed": _bool_num(harness.get("tests_passed")),
-        "opt_base_passed": _bool_num(harness.get("opt_base_passed")),
-        "opt_commit_passed": _bool_num(harness.get("opt_commit_passed")),
+        "tests_passed": int(harness.get("tests_passed") or 0),
+        "tests_total": int(harness.get("tests_total") or 0),
     }
 
     for key in ("baseline", "optimized", "expert"):

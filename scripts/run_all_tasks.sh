@@ -105,8 +105,13 @@ code_changes = (robust.get("patch") or {}).get("code_changes", True)
 if code_changes and tests.get("test_passed") is not True:
     errors.append(f"test_passed={tests.get('test_passed')!r}")
 
-if numeric.get("tests_passed") != 1:
-    errors.append("numeric tests_passed != 1")
+if not numeric.get("tests_total"):
+    errors.append("numeric missing tests_total")
+elif numeric.get("tests_passed") != numeric.get("tests_total"):
+    errors.append(
+        f"tests_passed={numeric.get('tests_passed')} != "
+        f"tests_total={numeric.get('tests_total')}"
+    )
 if "runtime_s_baseline" not in numeric:
     errors.append("numeric missing runtime_s_baseline")
 
