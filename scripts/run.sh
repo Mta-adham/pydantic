@@ -91,11 +91,7 @@ for task in "${TASK_IDS[@]}"; do
             fi
             ;;
         test)
-            if pydantic_workflow test "$task" "${EXTRA[@]}"; then
-                show_summary "$task"
-            else
-                failures+=("$task")
-            fi
+            pydantic_workflow test "$task" "${EXTRA[@]}" || failures+=("$task")
             ;;
         reset)
             pydantic_workflow reset "$task" || failures+=("$task")

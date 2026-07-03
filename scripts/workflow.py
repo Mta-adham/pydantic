@@ -292,8 +292,8 @@ def prepare_command_hint(instance_id: str | None = None) -> str:
     return "./compile <task_id>"
 
 
-def harness_command_hint(instance_id: str) -> str:
-    return f"./benchmark {instance_id}"
+def harness_command_hint(instance_id: str, *, command: str = "benchmark") -> str:
+    return f"./{command} {instance_id}"
 
 
 def require_active_task(
@@ -964,14 +964,14 @@ def _read_instance_report_file(path: Path, instance_id: str) -> dict:
 
 
 def load_instance_report(
-    instance_id: str, run_id: str, model_name: str
+    instance_id: str, run_id: str, model_name: str, *, command: str = "benchmark"
 ) -> dict:
     path = instance_report_path(instance_id, run_id, model_name)
     if path.is_file():
         return _read_instance_report_file(path, instance_id)
     raise SystemExit(
         f"No GSO harness report at {path}. "
-        f"Run: {harness_command_hint(instance_id)}"
+        f"Run: {harness_command_hint(instance_id, command=command)}"
     )
 
 
@@ -984,9 +984,10 @@ def run_harness(
     max_workers: int = 1,
     pull_image: bool = True,
     ephemeral_image: bool = True,
+    action: str = "benchmark",
 ) -> str:
     instance = load_instance(instance_id)
-    require_active_task(instance_id, action="benchmark")
+    require_active_task(instance_id, action=action)
     pred_path = predictions_path(instance_id)
     if not pred_path.exists():
         raise SystemExit(
@@ -1923,7 +1924,9 @@ def write_test_json(
     run_id: str,
     model_name: str = "local-edit",
 ) -> Path:
-    instance_report = load_instance_report(instance_id, run_id, model_name)
+    instance_report = load_instance_report(
+        instance_id, run_id, model_name, command="test"
+    )
     out = hub_artemis_test_path()
     payload = build_artemis_test_payload(
         instance_id, run_id, model_name, instance_report
@@ -1956,8 +1959,41 @@ def benchmark_patch(
             max_workers=max_workers,
             pull_image=pull_image,
             ephemeral_image=ephemeral_image,
+            action="benchmark",
         )
     return write_benchmark_json(instance_id, run_id, model_name)
+
+
+def test_patch(
+    instance_id: str,
+    *,
+    model_name: str = "local-edit",
+    run_id: str | None = None,
+    timeout: int = 1800,
+    max_workers: int = 1,
+    pull_image: bool = True,
+    ephemeral_image: bool = True,
+    reuse_report: bool = False,
+    from_benchmark: bool = False,
+) -> Path:
+    require_active_task(instance_id, action="test")
+    if from_benchmark:
+        run_id = run_id or f"benchmark-{instance_id}"
+    else:
+        run_id = run_id or f"test-{instance_id}"
+        report_path = instance_report_path(instance_id, run_id, model_name)
+        if not reuse_report or not report_path.is_file():
+            run_harness(
+                instance_id,
+                model_name=model_name,
+                run_id=run_id,
+                timeout=timeout,
+                max_workers=max_workers,
+                pull_image=pull_image,
+                ephemeral_image=ephemeral_image,
+                action="test",
+            )
+    return write_test_json(instance_id, run_id, model_name)
 
 
 def main() -> None:
@@ -2020,16 +2056,32 @@ def main() -> None:
     )
 
     test_cmd = sub.add_parser(
-        "test", help="Write test results JSON from the benchmark harness report"
+        "test",
+        help="Run GSO harness for correctness (or read an existing harness report)",
     )
     test_cmd.add_argument("instance_id")
     test_cmd.add_argument("--model-name", default="local-edit")
     test_cmd.add_argument("--run-id")
+    test_cmd.add_argument("--timeout", type=int, default=1800)
+    test_cmd.add_argument("--max-workers", type=int, default=1)
+    test_cmd.add_argument("--no-pull", action="store_true")
+    test_cmd.add_argument(
+        "--keep-image",
+        action="store_true",
+        help="Keep the Docker image after grading (default: remove to save disk)",
+    )
+    test_cmd.add_argument(
+        "--reuse-report",
+        action="store_true",
+        help="Skip harness if report already exists for this run-id",
+    )
     test_cmd.add_argument(
         "--from-benchmark",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Read results from benchmark run-id (default: on)",
+        action="store_true",
+        help=(
+            "Read the benchmark run report (run-id benchmark-<task>) instead of "
+            "running a separate test harness"
+        ),
     )
 
     args = parser.parse_args()
@@ -2065,13 +2117,17 @@ def main() -> None:
             reuse_report=args.reuse_report,
         )
     elif args.command == "test":
-        if not args.from_benchmark:
-            raise SystemExit(
-                "test only supports reading the benchmark harness report.\n"
-                f"Run: ./benchmark {args.instance_id}  then  ./test {args.instance_id}"
-            )
-        run_id = args.run_id or f"benchmark-{args.instance_id}"
-        write_test_json(args.instance_id, run_id, args.model_name)
+        test_patch(
+            args.instance_id,
+            model_name=args.model_name,
+            run_id=args.run_id,
+            timeout=args.timeout,
+            max_workers=args.max_workers,
+            pull_image=not args.no_pull,
+            ephemeral_image=args.ephemeral_image,
+            reuse_report=args.reuse_report,
+            from_benchmark=args.from_benchmark,
+        )
     else:
         parser.print_help()
         sys.exit(1)

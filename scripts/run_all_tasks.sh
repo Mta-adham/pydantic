@@ -70,7 +70,7 @@ for iid in "${TASKS[@]}"; do
     fi
 
     echo "--- test ---"
-    if ! ./test "${iid}" --from-benchmark; then
+    if ! ./test "${iid}"; then
         failures+=("test:${iid}")
         continue
     fi
@@ -111,15 +111,23 @@ if "runtime_s_baseline" not in numeric:
     errors.append("numeric missing runtime_s_baseline")
 
 run_id = f"benchmark-{iid}"
+test_run_id = f"test-{iid}"
 logs = list((hub / "logs" / "run_evaluation").rglob(f"*{run_id}*.report.json"))
+test_logs = list((hub / "logs" / "run_evaluation").rglob(f"*{test_run_id}*.report.json"))
 harness_report = str(logs[0]) if logs else None
+test_harness_report = str(test_logs[0]) if test_logs else None
 if not harness_report:
-    errors.append("no harness report under logs/run_evaluation/")
+    errors.append("no benchmark harness report under logs/run_evaluation/")
+if not test_harness_report:
+    errors.append("no test harness report under logs/run_evaluation/")
+got_test_report = tests.get("harness_report")
+if got_test_report and test_harness_report and got_test_report != test_harness_report:
+    errors.append(f"tests harness_report mismatch: {got_test_report}")
 
 if errors:
     print("VALIDATION ERRORS:", "; ".join(errors))
     raise SystemExit(1)
-print(f"OK digest={got[:20]}... test_passed={tests.get('test_passed')} report={harness_report}")
+print(f"OK digest={got[:20]}... test_passed={tests.get('test_passed')} benchmark_report={harness_report} test_report={test_harness_report}")
 PY
     then
         failures+=("validate:${iid}")
