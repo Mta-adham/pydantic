@@ -4,6 +4,7 @@ Test mypy failure with invalid types.
 from typing import Generic, List, TypeVar
 
 from pydantic import BaseModel
+from pydantic.generics import GenericModel
 
 T = TypeVar('T')
 
@@ -12,7 +13,7 @@ class Model(BaseModel):
     list_of_ints: List[int]
 
 
-class WrapperModel(BaseModel, Generic[T]):
+class WrapperModel(GenericModel, Generic[T]):
     payload: T
 
 

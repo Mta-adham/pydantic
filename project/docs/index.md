@@ -1,158 +1,136 @@
-# Pydantic
-
-[![CI](https://img.shields.io/github/actions/workflow/status/pydantic/pydantic/ci.yml?branch=main&logo=github&label=CI)](https://github.com/pydantic/pydantic/actions?query=event%3Apush+branch%3Amain+workflow%3ACI)
-[![Coverage](https://coverage-badge.samuelcolvin.workers.dev/pydantic/pydantic.svg)](https://github.com/pydantic/pydantic/actions?query=event%3Apush+branch%3Amain+workflow%3ACI)<br>
+[![CI](https://github.com/samuelcolvin/pydantic/workflows/CI/badge.svg?event=push)](https://github.com/samuelcolvin/pydantic/actions?query=event%3Apush+branch%3Amaster+workflow%3ACI)
+[![Coverage](https://codecov.io/gh/samuelcolvin/pydantic/branch/master/graph/badge.svg)](https://codecov.io/gh/samuelcolvin/pydantic)
 [![pypi](https://img.shields.io/pypi/v/pydantic.svg)](https://pypi.python.org/pypi/pydantic)
 [![CondaForge](https://img.shields.io/conda/v/conda-forge/pydantic.svg)](https://anaconda.org/conda-forge/pydantic)
-[![downloads](https://static.pepy.tech/badge/pydantic/month)](https://pepy.tech/project/pydantic)<br>
-[![license](https://img.shields.io/github/license/pydantic/pydantic.svg)](https://github.com/pydantic/pydantic/blob/main/LICENSE)
+[![downloads](https://img.shields.io/pypi/dm/pydantic.svg)](https://pypistats.org/packages/pydantic)
+[![license](https://img.shields.io/github/license/samuelcolvin/pydantic.svg)](https://github.com/samuelcolvin/pydantic/blob/master/LICENSE)
 
-{{ version }}.
+{!.version.md!}
 
-Pydantic is the most widely used data validation library for Python.
+Data validation and settings management using python type annotations.
 
-Fast and extensible, Pydantic plays nicely with your linters/IDE/brain. Define how data should be in pure, canonical Python 3.8+; validate it with Pydantic.
+*pydantic* enforces type hints at runtime, and provides user friendly errors when data is invalid.
 
-!!! success "Migrating to Pydantic V2"
-    Using Pydantic V1? See the [Migration Guide](migration.md) for notes on upgrading to Pydantic V2 in your applications!
+Define how data should be in pure, canonical python; validate it with *pydantic*.
 
-```py title="Pydantic Example" requires="3.10"
-from datetime import datetime
-from typing import Tuple
+## Example
 
-from pydantic import BaseModel
+```py
+{!.tmp_examples/index_main.py!}
+```
+_(This script is complete, it should run "as is")_
 
+What's going on here:
 
-class Delivery(BaseModel):
-    timestamp: datetime
-    dimensions: Tuple[int, int]
+* `id` is of type int; the annotation-only declaration tells *pydantic* that this field is required. Strings,
+  bytes or floats will be coerced to ints if possible; otherwise an exception will be raised.
+* `name` is inferred as a string from the provided default; because it has a default, it is not required.
+* `signup_ts` is a datetime field which is not required (and takes the value ``None`` if it's not supplied).
+  *pydantic* will process either a unix timestamp int (e.g. `1496498400`) or a string representing the date & time.
+* `friends` uses python's typing system, and requires a list of integers. As with `id`, integer-like objects
+  will be converted to integers.
 
+If validation fails pydantic will raise an error with a breakdown of what was wrong:
 
-m = Delivery(timestamp='2020-01-02T03:04:05Z', dimensions=['10', '20'])
-print(repr(m.timestamp))
-#> datetime.datetime(2020, 1, 2, 3, 4, 5, tzinfo=TzInfo(UTC))
-print(m.dimensions)
-#> (10, 20)
+```py
+{!.tmp_examples/index_error.py!}
+```
+outputs:
+```json
+{!.tmp_examples/index_error.json!}
 ```
 
-## Why use Pydantic?
+## Rationale
 
-- **Powered by type hints** &mdash; with Pydantic, schema validation and serialization are controlled by type annotations; less to learn, less code to write, and integration with your IDE and static analysis tools. [Learn more…](why.md#type-hints)
-- **Speed** &mdash; Pydantic's core validation logic is written in Rust. As a result, Pydantic is among the fastest data validation libraries for Python. [Learn more…](why.md#performance)
-- **JSON Schema** &mdash; Pydantic models can emit JSON Schema, allowing for easy integration with other tools. [Learn more…](why.md#json-schema)
-- **Strict** and **Lax** mode &mdash; Pydantic can run in either `strict=True` mode (where data is not converted) or `strict=False` mode where Pydantic tries to coerce data to the correct type where appropriate. [Learn more…](why.md#strict-lax)
-- **Dataclasses**, **TypedDicts** and more &mdash; Pydantic supports validation of many standard library types including `dataclass` and `TypedDict`. [Learn more…](why.md#typeddict)
-- **Customisation** &mdash; Pydantic allows custom validators and serializers to alter how data is processed in many powerful ways. [Learn more…](why.md#customisation)
-- **Ecosystem** &mdash; around 8,000 packages on PyPI use Pydantic, including massively popular libraries like
-  _FastAPI_, _huggingface_, _Django Ninja_, _SQLModel_, & _LangChain_. [Learn more…](why.md#ecosystem)
-- **Battle tested** &mdash; Pydantic is downloaded over 70M times/month and is used by all FAANG companies and 20 of the 25 largest companies on NASDAQ. If you're trying to do something with Pydantic, someone else has probably already done it. [Learn more…](why.md#using-pydantic)
+So *pydantic* uses some cool new language features, but why should I actually go and use it?
 
-[Installing Pydantic](install.md) is as simple as: `pip install pydantic`
+**plays nicely with your IDE/linter/brain**
+: There's no new schema definition micro-language to learn. If you know how to use python type hints, 
+  you know how to use *pydantic*. Data structures are just instances of classes you define with type annotations, 
+  so auto-completion, linting, [mypy](usage/mypy.md), IDEs (especially [PyCharm](pycharm_plugin.md)), 
+  and your intuition should all work properly with your validated data.
 
-## Pydantic examples
+**dual use**
+: *pydantic's* [BaseSettings](usage/settings.md) class allows *pydantic* to be used in both a "validate this request
+  data" context and in a "load my system settings" context. The main differences are that system settings can
+  be read from environment variables, and more complex objects like DSNs and python objects are often required.
 
-To see Pydantic at work, let's start with a simple example, creating a custom class that inherits from `BaseModel`:
+**fast**
+: In [benchmarks](benchmarks.md) *pydantic* is faster than all other tested libraries.
 
-```py upgrade="skip" title="Validation Successful" requires="3.10"
-from datetime import datetime
+**validate complex structures**
+: use of [recursive *pydantic* models](usage/models.md#recursive-models), `typing`'s 
+  [standard types](usage/types.md#standard-library-types) (e.g. `List`, `Tuple`, `Dict` etc.) and 
+  [validators](usage/validators.md) allow
+  complex data schemas to be clearly and easily defined, validated, and parsed.
 
-from pydantic import BaseModel, PositiveInt
+**extensible**
+: *pydantic* allows [custom data types](usage/types.md#custom-data-types) to be defined or you can extend validation 
+  with methods on a model decorated with the [`validator`](usage/validators.md) decorator.
+  
+**dataclasses integration**
+: As well as `BaseModel`, *pydantic* provides
+  a [`dataclass`](usage/dataclasses.md) decorator which creates (almost) vanilla python dataclasses with input
+  data parsing and validation.
 
+## Using Pydantic
 
-class User(BaseModel):
-    id: int  # (1)!
-    name: str = 'John Doe'  # (2)!
-    signup_ts: datetime | None  # (3)!
-    tastes: dict[str, PositiveInt]  # (4)!
+Hundreds of organisations and packages are using *pydantic*, including:
 
+[FastAPI](https://fastapi.tiangolo.com/)
+: a high performance API framework, easy to learn,
+  fast to code and ready for production, based on *pydantic* and Starlette.
 
-external_data = {
-    'id': 123,
-    'signup_ts': '2019-06-01 12:22',  # (5)!
-    'tastes': {
-        'wine': 9,
-        b'cheese': 7,  # (6)!
-        'cabbage': '1',  # (7)!
-    },
-}
+[Project Jupyter](https://jupyter.org/)
+: developers of the Jupyter notebook are using *pydantic* 
+  [for subprojects](https://github.com/samuelcolvin/pydantic/issues/773).
 
-user = User(**external_data)  # (8)!
+**Microsoft**
+: are using *pydantic* (via FastAPI) for 
+  [numerous services](https://github.com/tiangolo/fastapi/pull/26#issuecomment-463768795), some of which are 
+  "getting integrated into the core Windows product and some Office products."
 
-print(user.id)  # (9)!
-#> 123
-print(user.model_dump())  # (10)!
-"""
-{
-    'id': 123,
-    'name': 'John Doe',
-    'signup_ts': datetime.datetime(2019, 6, 1, 12, 22),
-    'tastes': {'wine': 9, 'cheese': 7, 'cabbage': 1},
-}
-"""
-```
+**Amazon Web Services**
+: are using *pydantic* in [gluon-ts](https://github.com/awslabs/gluon-ts), an open-source probabilistic time series
+  modeling library.
 
-1. `id` is of type `int`; the annotation-only declaration tells Pydantic that this field is required. Strings,
-  bytes, or floats will be coerced to ints if possible; otherwise an exception will be raised.
-2. `name` is a string; because it has a default, it is not required.
-3. `signup_ts` is a `datetime` field that is required, but the value `None` may be provided;
-  Pydantic will process either a unix timestamp int (e.g. `1496498400`) or a string representing the date and time.
-4. `tastes` is a dictionary with string keys and positive integer values. The `PositiveInt` type is shorthand for `Annotated[int, annotated_types.Gt(0)]`.
-5. The input here is an ISO8601 formatted datetime, Pydantic will convert it to a `datetime` object.
-6. The key here is `bytes`, but Pydantic will take care of coercing it to a string.
-7. Similarly, Pydantic will coerce the string `'1'` to an integer `1`.
-8. Here we create instance of `User` by passing our external data to `User` as keyword arguments
-9. We can access fields as attributes of the model
-10. We can convert the model to a dictionary with `model_dump()`
+**The NSA**
+: are using *pydantic* in [WALKOFF](https://github.com/nsacyber/WALKOFF), an open-source automation framework.
 
-If validation fails, Pydantic will raise an error with a breakdown of what was wrong:
+**Uber**
+: are using *pydantic* in [Ludwig](https://github.com/uber/ludwig), an open-source TensorFlow wrapper.
 
-```py upgrade="skip" title="Validation Error" test="skip" lint="skip"
-# continuing the above example...
+**Cuenca**
+: are a Mexican neobank that uses *pydantic* for several internal
+  tools (including API validation) and for open source projects like
+  [stpmex](https://github.com/cuenca-mx/stpmex-python), which is used to process real-time, 24/7, inter-bank
+  transfers in Mexico.
 
-from pydantic import ValidationError
+[The Molecular Sciences Software Institute](https://molssi.org)
+: are using *pydantic* in [QCFractal](https://github.com/MolSSI/QCFractal), a massively distributed compute framework
+  for quantum chemistry.
 
+[Reach](https://www.reach.vote)
+: trusts *pydantic* (via FastAPI) and [*arq*](https://github.com/samuelcolvin/arq) (Samuel's excellent
+  asynchronous task queue) to reliably power multiple mission-critical microservices.
 
-class User(BaseModel):
-    id: int
-    name: str = 'John Doe'
-    signup_ts: datetime | None
-    tastes: dict[str, PositiveInt]
+For a more comprehensive list of open-source projects using *pydantic* see the 
+[list of dependents on github](https://github.com/samuelcolvin/pydantic/network/dependents).
 
+## Discussion of Pydantic
 
-external_data = {'id': 'not an int', 'tastes': {}}  # (1)!
+Podcasts and videos discussing pydantic.
 
-try:
-    User(**external_data)  # (2)!
-except ValidationError as e:
-    print(e.errors())
-    """
-    [
-        {
-            'type': 'int_parsing',
-            'loc': ('id',),
-            'msg': 'Input should be a valid integer, unable to parse string as an integer',
-            'input': 'not an int',
-            'url': 'https://errors.pydantic.dev/2/v/int_parsing',
-        },
-        {
-            'type': 'missing',
-            'loc': ('signup_ts',),
-            'msg': 'Field required',
-            'input': {'id': 'not an int', 'tastes': {}},
-            'url': 'https://errors.pydantic.dev/2/v/missing',
-        },
-    ]
-    """
-```
+[Podcast.\_\_init\_\_](https://www.pythonpodcast.com/pydantic-data-validation-episode-263/){target=_blank}
+: Discussion about where *pydantic* came from and ideas for where it might go next with 
+  Samuel Colvin the creator of pydantic.
 
-1. The input data is wrong here &mdash; `id` is not a valid integer, and `signup_ts` is missing
-2. `User(...)` will raise a `ValidationError` with a list of errors
+[Python Bytes Podcast](https://pythonbytes.fm/episodes/show/157/oh-hai-pandas-hold-my-hand){target=_blank}
+: "*This is a sweet simple framework that solves some really nice problems... Data validations and settings management 
+  using python type annotations, and it's the python type annotations that makes me really extra happy... It works 
+  automatically with all the IDE's you already have.*" --Michael Kennedy
 
-## Who is using Pydantic?
+[Python pydantic Introduction – Give your data classes super powers](https://www.youtube.com/watch?v=WJmqgJn9TXg){target=_blank}
+: a talk by Alexander Hultnér originally for the Python Pizza Conference introducing new users to pydantic and walking 
+  through the core features of pydantic.
 
-Hundreds of organisations and packages are using Pydantic. Some of the prominent companies and organizations around the world who are using Pydantic include:
-
-{{ organisations }}
-
-For a more comprehensive list of open-source projects using Pydantic see the
-[list of dependents on github](https://github.com/pydantic/pydantic/network/dependents), or you can find some awesome projects using Pydantic in [awesome-pydantic](https://github.com/Kludex/awesome-pydantic).
