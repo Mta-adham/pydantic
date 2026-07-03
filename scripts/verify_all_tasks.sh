@@ -48,10 +48,6 @@ if active != iid:
 if not m.project_commit_matches_task(iid):
     print("project/ commit mismatch")
     sys.exit(1)
-link = root / "eval" / "active"
-if not link.is_symlink():
-    print("eval/active is not a symlink")
-    sys.exit(1)
 meta = json.loads((m.workspace_dir(iid) / "metadata.json").read_text())
 if meta.get("instance_id") != iid:
     print("metadata instance_id mismatch")
@@ -75,23 +71,14 @@ slug = iid.split("__", 1)[-1]
 defn = yaml.safe_load((hub / "benchmarks" / slug / "benchmark.yaml").read_text())
 expected_digest = defn["target"]["digest"]
 
-ws = hub / "eval" / f"eval-{slug.replace('pydantic-', 'pydantic-')}"
-# workspace dir naming: eval-pydantic-{short}-{short}
-for d in (hub / "eval").iterdir():
-    if d.is_dir() and (d / "metadata.json").exists():
-        meta = json.loads((d / "metadata.json").read_text())
-        if meta.get("instance_id") == iid:
-            ws = d
-            break
-
-for name in ("output/artemis_results.json",):
-    path = ws / name
+for name in ("artemis_results_robust.json",):
+    path = hub / name
     if not path.exists():
         print(f"missing {path}")
         sys.exit(1)
     data = json.loads(path.read_text())
     if data.get("instance_id") != iid:
-        print(f"wrong instance_id in {name}")
+        print(f"wrong instance_id in {name}: {data.get('instance_id')!r}")
         sys.exit(1)
     prov = data.get("provenance") or {}
     got = prov.get("image_digest")
@@ -99,15 +86,10 @@ for name in ("output/artemis_results.json",):
         print(f"digest mismatch in {name}: {got} != {expected_digest}")
         sys.exit(1)
 
-hub_copy = hub / "artemis_results.json"
-if hub_copy.exists():
-    data = json.loads(hub_copy.read_text())
-    if data.get("instance_id") != iid:
-        print(f"hub artemis_results.json is for {data.get('instance_id')}, not {iid}")
-        sys.exit(1)
-    if (data.get("provenance") or {}).get("image_digest") != expected_digest:
-        print("hub artemis_results.json digest mismatch")
-        sys.exit(1)
+numeric = hub / "artemis_results.json"
+if not numeric.exists():
+    print(f"missing {numeric}")
+    sys.exit(1)
 print(f"digest={got[:20]}...")
 PY
 }
@@ -119,26 +101,19 @@ import json, sys
 from pathlib import Path
 
 iid, hub = sys.argv[1], Path(sys.argv[2])
-for d in (hub / "eval").iterdir():
-    if not d.is_dir():
-        continue
-    meta_path = d / "metadata.json"
-    if not meta_path.exists():
-        continue
-    if json.loads(meta_path.read_text()).get("instance_id") != iid:
-        continue
-    path = d / "output" / "tests_artemis_results.json"
-    if not path.exists():
-        print(f"missing {path}")
-        sys.exit(1)
-    data = json.loads(path.read_text())
-    if data.get("instance_id") != iid:
-        print("wrong instance_id in tests_artemis_results.json")
-        sys.exit(1)
-    print(f"test_passed={data.get('summary', {}).get('test_passed')}")
-    sys.exit(0)
-print("workspace not found")
-sys.exit(1)
+path = hub / "tests_artemis_results.json"
+if not path.exists():
+    print(f"missing {path}")
+    sys.exit(1)
+data = json.loads(path.read_text())
+if data.get("instance_id") != iid:
+    print("wrong instance_id in tests_artemis_results.json")
+    sys.exit(1)
+print(f"test_passed={data.get('test_passed')}")
+code_changes = (json.loads((hub / "artemis_results_robust.json").read_text()).get("patch") or {}).get("code_changes", True)
+if code_changes and data.get("test_passed") is not True:
+    print("test_passed is not True")
+    sys.exit(1)
 PY
 }
 
@@ -150,21 +125,21 @@ for iid in "${TASKS[@]}"; do
     echo "========== ${iid} =========="
 
     echo "--- compile ---"
-    if ! ./pydantic compile "${iid}"; then
+    if ! ./compile "${iid}"; then
         failures+=("compile:${iid}")
         continue
     fi
     check "task state after compile" verify_task_state "${iid}"
 
     echo "--- benchmark ---"
-    if ! ./pydantic benchmark "${iid}"; then
+    if ! ./benchmark "${iid}"; then
         failures+=("benchmark:${iid}")
         continue
     fi
     check "benchmark outputs + digest" verify_benchmark_output "${iid}"
 
     echo "--- test ---"
-    if ! ./pydantic test "${iid}" --from-benchmark; then
+    if ! ./test "${iid}" --from-benchmark; then
         failures+=("test:${iid}")
         continue
     fi

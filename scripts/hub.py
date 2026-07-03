@@ -124,7 +124,7 @@ def require_digest(defn: dict[str, Any]) -> str:
         image = target.get("image", "<unknown>")
         raise SystemExit(
             f"Benchmark {defn.get('name')} has no pinned image digest.\n"
-            f"Run: ./pydantic images pin {defn.get('instance_id')}\n"
+            f"Run: ./scripts/images.sh pin-images {defn.get('instance_id')}\n"
             f"Refusing to evaluate {image} without an immutable digest."
         )
     digest = normalize_digest(str(digest))
@@ -215,7 +215,7 @@ def pull_image_by_digest(defn: dict[str, Any]) -> str:
             f"Image digest mismatch for {defn.get('name')}:\n"
             f"  benchmark.yaml: {expected}\n"
             f"  resolved:       {resolved}\n"
-            "Refusing to run — update benchmark.yaml via ./pydantic images pin if the image was rebuilt."
+            "Refusing to run — update benchmark.yaml via ./scripts/images.sh pin-images if the image was rebuilt."
         )
 
     print(f"Verified image digest: {resolved}")
@@ -257,7 +257,7 @@ def verify_benchmark_image(
         if not pull:
             raise SystemExit(
                 f"Local image {image_tag} digest {resolved!r} != pinned {expected}.\n"
-                "Run ./pydantic images pull to fetch the pinned digest."
+                "Run ./scripts/images.sh pull-images to fetch the pinned digest."
             )
         resolved = pull_image_by_digest(defn)
     else:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Workflow commands: prepare | compile | benchmark | test | reset
+# Workflow commands: compile | benchmark | test | reset
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -26,7 +26,7 @@ done
 
 if [[ ${#TASK_IDS[@]} -eq 0 ]]; then
     case "$COMMAND" in
-        compile|benchmark|test|prepare|reset)
+        compile|benchmark|test|reset)
             active="$(pydantic_active_task_id)"
             if [[ -z "$active" ]]; then
                 echo "No active task. Prepare one first, e.g.:" >&2
@@ -36,13 +36,10 @@ if [[ ${#TASK_IDS[@]} -eq 0 ]]; then
             TASK_IDS=("$active")
             ;;
         *)
-            mapfile -t TASK_IDS < <(pydantic_task_ids)
+            echo "Unknown command: $COMMAND" >&2
+            exit 1
             ;;
     esac
-fi
-if [[ ${#TASK_IDS[@]} -eq 0 ]]; then
-    echo "No tasks in ${PYDANTIC_ROOT}/benchmarks/" >&2
-    exit 1
 fi
 
 PREPARE_EXTRA=()
@@ -61,8 +58,7 @@ run_prepare() {
 
 show_summary() {
     local task="$1"
-    local summary
-    summary="$(pydantic_eval_dir "$task")/output/summary.txt"
+    local summary="${PYDANTIC_ROOT}/summary.txt"
     if [[ -f "$summary" ]]; then
         echo ""
         echo "--- ${task} ---"
@@ -81,9 +77,6 @@ for task in "${TASK_IDS[@]}"; do
     echo ""
     echo ">> ${task}"
     case "$COMMAND" in
-        prepare)
-            run_prepare "$task" || failures+=("$task")
-            ;;
         compile)
             run_prepare "$task" 1 || { failures+=("$task"); continue; }
             pydantic_workflow patch "$task" \
@@ -105,8 +98,7 @@ for task in "${TASK_IDS[@]}"; do
             fi
             ;;
         reset)
-            GSO_PROJECT_ROOT="${GSO_PROJECT_ROOT}" \
-                pydantic_workflow reset "$task" || failures+=("$task")
+            pydantic_workflow reset "$task" || failures+=("$task")
             ;;
         *)
             echo "Unknown command: $COMMAND" >&2

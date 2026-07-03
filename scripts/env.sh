@@ -11,7 +11,6 @@ pydantic_export_paths() {
     local hub
     hub="$(pydantic_hub_root)"
     export PYDANTIC_ROOT="$hub"
-    export GSO_ROOT="$hub"
     export GSO_WORKSPACE_ROOT="$hub"
     export GSO_PROJECT_ROOT="$hub/project"
 }
@@ -49,7 +48,6 @@ pydantic_task_ids() {
 pydantic_workflow() {
     local wf
     wf="$(pydantic_workflow_py)"
-    export GSO_ROOT="${PYDANTIC_ROOT}"
     export GSO_WORKSPACE_ROOT="${PYDANTIC_ROOT}"
     PYTHONPATH="$(dirname "$wf")${PYTHONPATH:+:$PYTHONPATH}" python3 "$wf" "$@"
 }
@@ -58,7 +56,6 @@ pydantic_workflow_eval() {
     local py_expr="$1"
     local wf
     wf="$(pydantic_workflow_py)"
-    export GSO_ROOT="${PYDANTIC_ROOT}"
     export GSO_WORKSPACE_ROOT="${PYDANTIC_ROOT}"
     PYTHONPATH="$(dirname "$wf")" python3 -c "
 import importlib.util
@@ -69,15 +66,19 @@ ${py_expr}
 "
 }
 
-pydantic_eval_dir() {
-    local task="$1"
-    pydantic_workflow_eval "print(m.workspace_dir('${task}'))"
-}
-
 pydantic_print_status() {
     pydantic_workflow_eval "print(m.format_active_task_status())" 2>/dev/null || true
 }
 
 pydantic_active_task_id() {
-    pydantic_workflow_eval "aid = m.read_active_instance_id(); print(aid or '')"
+    GSO_WORKSPACE_ROOT="${PYDANTIC_ROOT}" python3 -c "
+import os, yaml
+from pathlib import Path
+p = Path(os.environ['GSO_WORKSPACE_ROOT']) / '.gso_task_id'
+if not p.is_file():
+    print('')
+else:
+    data = yaml.safe_load(p.read_text()) or {}
+    print(data.get('instance_id') or '')
+"
 }

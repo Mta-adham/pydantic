@@ -21,20 +21,10 @@ import numpy as np
 
 from gso.utils.io import load_gso_dataset
 
-def _resolve_workspace_root() -> Path:
-    if env_root := os.environ.get("GSO_WORKSPACE_ROOT"):
-        return Path(env_root).expanduser().resolve()
-    return Path(__file__).resolve().parent.parent / "workspace"
-
-
-WORKSPACE_ROOT = _resolve_workspace_root()
-HUB_ROOT = Path(__file__).resolve().parent.parent
-
-
 def hub_root() -> Path:
     if env := os.environ.get("GSO_WORKSPACE_ROOT"):
         return Path(env).expanduser().resolve()
-    return HUB_ROOT
+    return Path(__file__).resolve().parent.parent
 
 
 def gso_log_dir() -> Path:
@@ -50,12 +40,7 @@ _VERIFIED_PROVENANCE: dict[str, dict[str, Any]] = {}
 
 
 def load_instance(instance_id: str):
-    if root := benchmark_root():
-        return _load_hub_instance(root, instance_id)
-    matches = load_gso_dataset(instance_ids=[instance_id])
-    if not matches:
-        raise SystemExit(f"Unknown instance_id: {instance_id}")
-    return matches[0]
+    return _load_hub_instance(benchmark_root(), instance_id)
 
 
 def _load_hub_instance(root: Path, instance_id: str):
@@ -68,7 +53,7 @@ def _load_hub_instance(root: Path, instance_id: str):
 
         return GSOInstance(**json.loads(cache.read_text()))
 
-    defn = runner.load_benchmark_def(root, instance_id) if runner else {}
+    defn = runner.load_benchmark_def(root, instance_id)
     dataset_version = str(defn.get("dataset_version") or "gso-bench/gso@test")
     name, _, split = dataset_version.partition("@")
     if not split:
@@ -162,73 +147,26 @@ def is_test_path(rel_path: str) -> bool:
     )
 
 
-def project_root() -> Path | None:
+def project_root() -> Path:
     if env := os.environ.get("GSO_PROJECT_ROOT"):
         return Path(env).expanduser().resolve()
-    return None
+    raise SystemExit("GSO_PROJECT_ROOT is not set.")
 
 
-def edit_dir_name() -> str:
-    if project_root():
-        return "project"
-    return (os.environ.get("GSO_EDIT_DIR") or "optimized").strip() or "optimized"
-
-
-def edit_dir(instance_id: str) -> Path:
-    if root := project_root():
-        return root
-    return workspace_dir(instance_id) / edit_dir_name()
-
-
-def edit_dir_label() -> str:
-    if root := project_root():
-        return str(root)
-    name = edit_dir_name()
-    return "repo/" if name == "repo" else f"{name}/"
-
-
-def edit_dir_short_label() -> str:
-    if project_root() and benchmark_root():
-        return "project/"
-    return edit_dir_label()
-
-
-def benchmark_root() -> Path | None:
-    """Pydantic benchmark wrapper root (parent of project/)."""
-    if proj := project_root():
-        return proj.parent
-    return None
-
-
-def eval_dir() -> Path | None:
-    root = benchmark_root()
-    return (root / "eval") if root else None
-
-
-def _legacy_workspace_paths(root: Path, slug: str) -> list[Path]:
-    """Older layouts before eval/ container."""
-    return [
-        root / "evals" / slug,
-        root / slug,
-    ]
+def benchmark_root() -> Path:
+    return project_root().parent
 
 
 def _runner_module():
-    """Load repos/pydantic/scripts/hub.py when benchmark definitions exist."""
-    root = benchmark_root()
-    if not root:
-        return None
-    hub_py = root / "scripts" / "hub.py"
-    if not hub_py.exists():
-        # Legacy path
-        hub_py = root / "runner" / "definitions.py"
-    if not hub_py.exists():
-        return None
+    """Load scripts/hub.py for benchmark definitions."""
+    hub_py = benchmark_root() / "scripts" / "hub.py"
+    if not hub_py.is_file():
+        raise SystemExit(f"Missing hub module: {hub_py}")
     spec = importlib.util.spec_from_file_location(
         "pydantic_benchmark_hub", hub_py
     )
     if spec is None or spec.loader is None:
-        return None
+        raise SystemExit(f"Could not load hub module: {hub_py}")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -243,25 +181,19 @@ def gso_version() -> str:
         return "unknown"
 
 
-def verify_instance_image(instance_id: str, *, pull: bool = True) -> dict[str, Any] | None:
+def verify_instance_image(instance_id: str, *, pull: bool = True) -> dict[str, Any]:
     """Require pinned digest from benchmarks/*/benchmark.yaml before harness runs."""
-    runner = _runner_module()
-    root = benchmark_root()
-    if not runner or not root:
-        return None
-    verified = runner.verify_benchmark_image(root, instance_id, pull=pull)
+    verified = _runner_module().verify_benchmark_image(
+        benchmark_root(), instance_id, pull=pull
+    )
     _VERIFIED_PROVENANCE[instance_id] = verified
     return verified
 
 
 def build_provenance(instance_id: str, recorded_at: str) -> dict[str, Any] | None:
-    runner = _runner_module()
-    root = benchmark_root()
-    if not runner or not root:
-        return None
     verified = _VERIFIED_PROVENANCE.get(instance_id)
-    return runner.provenance_block(
-        root,
+    return _runner_module().provenance_block(
+        benchmark_root(),
         instance_id,
         gso_version=gso_version(),
         recorded_at=recorded_at,
@@ -279,73 +211,18 @@ def eval_dir_slug(instance_id: str, base_commit: str | None = None) -> str:
 
 
 def workspace_dir(instance_id: str) -> Path:
-    if root := benchmark_root():
-        instance = load_instance(instance_id)
-        slug = eval_dir_slug(instance_id, instance.base_commit)
-        current = eval_dir() / slug
-        if current.exists():
-            return current
-        for legacy in _legacy_workspace_paths(root, slug):
-            if legacy.exists():
-                return legacy
-        return current
-    return WORKSPACE_ROOT / instance_id
-
-
-def link_active_eval(instance_id: str) -> Path:
-    """Symlink eval/active -> the active task folder."""
-    root = benchmark_root()
-    if not root:
-        return workspace_dir(instance_id)
-    target = workspace_dir(instance_id)
-    container = eval_dir()
-    container.mkdir(parents=True, exist_ok=True)
-    link = container / "active"
-    if link.is_symlink() or link.exists():
-        link.unlink()
-    link.symlink_to(target.name)
-    return target
-
-
-def active_task_file() -> Path | None:
-    root = benchmark_root()
-    return (root / ".active_task") if root else None
+    instance = load_instance(instance_id)
+    slug = eval_dir_slug(instance_id, instance.base_commit)
+    return benchmark_root() / "eval" / slug
 
 
 def read_active_instance_id() -> str | None:
-    """Instance ID of the task prepared for editing (benchmark hub only)."""
-    root = benchmark_root()
-    if root:
-        runner = _runner_module()
-        if runner and (task_id := runner.read_gso_task_instance_id(root)):
-            return task_id
-    if path := active_task_file():
-        if path.exists():
-            text = path.read_text().strip()
-            if text:
-                return text
-    root = benchmark_root()
-    if not root:
-        return None
-    container = eval_dir()
-    if container:
-        link = container / "active"
-        if link.is_symlink():
-            meta = link.resolve() / "metadata.json"
-            if meta.exists():
-                return json.loads(meta.read_text()).get("instance_id")
-    return None
+    """Active task from .gso_task_id."""
+    return _runner_module().read_gso_task_instance_id(benchmark_root())
 
 
 def set_active_task(instance_id: str) -> None:
-    root = benchmark_root()
-    if root:
-        runner = _runner_module()
-        if runner:
-            runner.sync_gso_task_id(root, instance_id)
-    if path := active_task_file():
-        path.write_text(instance_id + "\n")
-    link_active_eval(instance_id)
+    _runner_module().sync_gso_task_id(benchmark_root(), instance_id)
 
 
 def is_git_work_tree(path: Path) -> bool:
@@ -365,7 +242,7 @@ def is_git_work_tree(path: Path) -> bool:
 
 def project_commit_matches_task(instance_id: str) -> bool:
     proj = project_root()
-    if not proj or not is_git_work_tree(proj):
+    if not is_git_work_tree(proj):
         return False
     instance = load_instance(instance_id)
     head = subprocess.run(
@@ -390,9 +267,9 @@ def project_commit_matches_task(instance_id: str) -> bool:
 def activate_task_for_editing(instance_id: str, *, checkout: bool = True) -> None:
     """Mark a task active and optionally sync project/ to its base commit."""
     set_active_task(instance_id)
-    proj = project_root()
-    if not proj or not checkout:
+    if not checkout:
         return
+    proj = project_root()
     instance = load_instance(instance_id)
     if not is_git_work_tree(proj):
         ensure_project_git_repo(instance, proj)
@@ -415,18 +292,8 @@ def prepare_command_hint(instance_id: str | None = None) -> str:
     return "./compile <task_id>"
 
 
-def compile_command_hint(instance_id: str) -> str:
-    """CLI hint for building predictions.jsonl / patch.diff."""
-    return f"./compile {instance_id}"
-
-
-def harness_command_hint(instance_id: str, *, action: str = "benchmark") -> str:
-    return f"./{action} {instance_id}"
-
-
-def continue_command_hint(active: str, action: str) -> str:
-    cmd = action.split()[0]
-    return f"./{cmd} {active}"
+def harness_command_hint(instance_id: str) -> str:
+    return f"./benchmark {instance_id}"
 
 
 def require_active_task(
@@ -436,9 +303,6 @@ def require_active_task(
     checkout_on_switch: bool = False,
 ) -> None:
     """Refuse compile/benchmark/test when instance_id != prepared active task."""
-    if not benchmark_root():
-        return
-
     active = read_active_instance_id()
     if active == instance_id:
         return
@@ -459,30 +323,27 @@ def require_active_task(
 
     runner = _runner_module()
     image_hint = ""
-    if runner:
-        try:
-            defn = runner.load_benchmark_def(benchmark_root(), instance_id)
-            digest = (defn.get("target") or {}).get("digest", "")
-            image_hint = (
-                f"\n  requested image: {(defn.get('target') or {}).get('image')}@{digest}"
-            )
-        except SystemExit:
-            pass
+    try:
+        defn = runner.load_benchmark_def(benchmark_root(), instance_id)
+        digest = (defn.get("target") or {}).get("digest", "")
+        image_hint = (
+            f"\n  requested image: {(defn.get('target') or {}).get('image')}@{digest}"
+        )
+    except SystemExit:
+        pass
 
     raise SystemExit(
         f"Task mismatch: cannot {action} {instance_id} while "
         f"{active} is the active task.\n"
-        f"  eval/active -> {benchmark_root() / 'eval' / 'active'}\n"
+        f"  .gso_task_id: {benchmark_root() / '.gso_task_id'}\n"
         f"  project/ is checked out for {active}, not {instance_id}.{image_hint}\n"
         f"Switch tasks: {prepare_command_hint(instance_id)}\n"
-        f"Or continue:   {continue_command_hint(active, action)}"
+        f"Or continue:   ./{action.split()[0]} {active}"
     )
 
 
 def require_project_matches_active_task(instance_id: str) -> None:
     """Refuse compile when project/ HEAD != task base commit."""
-    if not project_root():
-        return
     if project_commit_matches_task(instance_id):
         return
     raise SystemExit(
@@ -495,19 +356,18 @@ def format_active_task_status() -> str:
     active = read_active_instance_id()
     if not active:
         return f"Active task: <none> (run {prepare_command_hint()})"
-    parts = [f"Active task: {active}", f"eval/active -> {benchmark_root() / 'eval' / 'active'}"]
+    parts = [f"Active task: {active}", f".gso_task_id: {benchmark_root() / '.gso_task_id'}"]
     runner = _runner_module()
-    if runner and benchmark_root():
-        try:
-            defn = runner.load_benchmark_def(benchmark_root(), active)
-            target = defn.get("target") or {}
-            digest = target.get("digest", "")
-            parts.append(f"image: {target.get('image')}@{digest}")
-        except SystemExit:
-            pass
-    if project_root() and project_commit_matches_task(active):
+    try:
+        defn = runner.load_benchmark_def(benchmark_root(), active)
+        target = defn.get("target") or {}
+        digest = target.get("digest", "")
+        parts.append(f"image: {target.get('image')}@{digest}")
+    except SystemExit:
+        pass
+    if project_commit_matches_task(active):
         parts.append("project/: commit OK")
-    elif project_root():
+    else:
         parts.append(f"project/: commit MISMATCH (run {prepare_command_hint(active)})")
     return "\n".join(parts)
 
@@ -515,8 +375,6 @@ def format_active_task_status() -> str:
 def print_benchmark_hub_edit_hints(instance_id: str, paths: list[str]) -> None:
     """Instructions for editing project/ in the pydantic benchmark hub."""
     proj = project_root()
-    if not proj or not benchmark_root():
-        return
     print(format_active_task_status())
     print("Edit the pydantic project (evaluated by GSO harness in Docker):")
     print(f"  project: {proj}")
@@ -534,7 +392,7 @@ def load_metadata(instance_id: str) -> dict:
     if not path.exists():
         raise SystemExit(
             f"No eval workspace for {instance_id}. "
-            f"Run: {compile_command_hint(instance_id)}"
+            f"Run: {prepare_command_hint(instance_id)}"
         )
     return json.loads(path.read_text())
 
@@ -626,6 +484,32 @@ def checkout_project_at_commit(instance, project_dir: Path) -> None:
     _checkout_git_commit(project_dir, instance.base_commit, label=instance.repo)
 
 
+def populate_expert_dir(instance, root: Path, rel_files: list[str]) -> None:
+    """Copy task files at opt_commit into eval/<task>/expert/ for local reference."""
+    expert_dir = root / "expert"
+    if expert_dir.is_dir() and any(expert_dir.rglob("*")):
+        return
+    expert_src = root / ".expert_src"
+    try:
+        if expert_src.exists():
+            shutil.rmtree(expert_src)
+        print(f"Materializing expert/ @ {instance.opt_commit[:12]}...")
+        clone_repo(instance, expert_src)
+        _checkout_git_commit(expert_src, instance.opt_commit)
+        for rel_path in rel_files:
+            src = expert_src / rel_path
+            if not src.is_file():
+                print(f"Warning: expert file missing: {rel_path}")
+                continue
+            dst = expert_dir / rel_path
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+        if any(expert_dir.rglob("*")):
+            print(f"Wrote expert/: {expert_dir}")
+    finally:
+        shutil.rmtree(expert_src, ignore_errors=True)
+
+
 def setup_workspace(
     instance_id: str,
     files: list[str] | None = None,
@@ -634,26 +518,21 @@ def setup_workspace(
 ) -> Path:
     instance = load_instance(instance_id)
     root = workspace_dir(instance_id)
-    shared_project = project_root()
+    proj = project_root()
 
     if root.exists() and not force:
-        if shared_project:
-            activate_task_for_editing(instance_id, checkout=True)
-            meta_paths: list[str] = []
-            meta_path = metadata_path(instance_id)
-            if meta_path.exists():
-                meta_paths = json.loads(meta_path.read_text()).get("files", [])
-            if os.environ.get("GSO_QUIET_PREPARE", "").strip() == "1":
-                print(
-                    f"Ready: {instance_id} — project/ synced, "
-                    f"eval/{root.name}"
-                )
-                return root
-            print(f"Eval already exists: {root}")
-            print_benchmark_hub_edit_hints(instance_id, meta_paths)
+        activate_task_for_editing(instance_id, checkout=True)
+        meta_path = metadata_path(instance_id)
+        if meta_path.exists():
+            meta_paths = json.loads(meta_path.read_text()).get("files", [])
+            populate_expert_dir(instance, root, meta_paths)
+        else:
+            meta_paths = []
+        if os.environ.get("GSO_QUIET_PREPARE", "").strip() == "1":
+            print(f"Ready: {instance_id} — project/ synced, eval/{root.name}")
             return root
         print(f"Workspace already exists: {root}")
-        print("Use --force to recreate it.")
+        print_benchmark_hub_edit_hints(instance_id, meta_paths)
         return root
 
     if root.exists():
@@ -662,22 +541,11 @@ def setup_workspace(
     baseline_dir = root / "baseline"
     baseline_dir.mkdir(parents=True)
 
-    if shared_project:
-        proj = shared_project
-        if not is_git_work_tree(proj):
-            ensure_project_git_repo(instance, proj)
-        else:
-            checkout_project_at_commit(instance, proj)
-        source_dir = proj
+    if not is_git_work_tree(proj):
+        ensure_project_git_repo(instance, proj)
     else:
-        repo_dir = root / "repo"
-        optimized_dir = root / "optimized"
-        use_repo = edit_dir_name() == "repo"
-        if not use_repo:
-            optimized_dir.mkdir(parents=True)
-        print(f"Cloning {instance.repo} @ {instance.base_commit[:8]}...")
-        clone_repo(instance, repo_dir)
-        source_dir = repo_dir
+        checkout_project_at_commit(instance, proj)
+    source_dir = proj
 
     rel_files = files or files_from_diff(instance.gt_diff, include_tests=include_tests)
     if not rel_files:
@@ -712,14 +580,12 @@ def setup_workspace(
         baseline_dst = baseline_dir / rel_path
         baseline_dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, baseline_dst)
-        if not shared_project and edit_dir_name() != "repo":
-            opt_dst = (root / "optimized") / rel_path
-            opt_dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, opt_dst)
         copied.append(rel_path)
 
     if not copied:
         raise SystemExit("No files were copied into baseline/.")
+
+    populate_expert_dir(instance, root, copied)
 
     meta = {
         "instance_id": instance.instance_id,
@@ -731,48 +597,22 @@ def setup_workspace(
     }
     metadata_path(instance_id).write_text(json.dumps(meta, indent=2))
 
-    if not benchmark_root():
-        # Save task context for convenience while editing.
-        (root / "task.json").write_text(
-            json.dumps(
-                {
-                    "instance_id": instance.instance_id,
-                    "repo": instance.repo,
-                    "api": instance.api,
-                    "hints_text": instance.hints_text,
-                    "prob_script": instance.prob_script,
-                },
-                indent=2,
-            )
-        )
-
-    print(f"Eval ready: {root}")
-    if shared_project:
-        link_active_eval(instance_id)
-        set_active_task(instance_id)
-        print_benchmark_hub_edit_hints(instance_id, copied)
-    elif edit_dir_name() == "repo":
-        print("Edit the project under repo/, keeping baseline/ unchanged.")
-        print("baseline/ holds the frozen reference; compile diffs repo/ vs baseline/.")
-        for path in copied:
-            print(f"  - repo/{path}")
-    else:
-        print("Edit files under optimized/, keeping baseline/ unchanged.")
-        for path in copied:
-            print(f"  - {path}")
+    print(f"Workspace ready: {root}")
+    set_active_task(instance_id)
+    print_benchmark_hub_edit_hints(instance_id, copied)
     return root
 
 
 def reset_workspace_edits(instance_id: str) -> Path:
-    """Restore editable files from baseline/ (discard edits in repo/ or optimized/)."""
+    """Restore editable files from baseline/ (discard edits in project/)."""
     meta = load_metadata(instance_id)
     root = workspace_dir(instance_id)
     baseline_dir = root / "baseline"
-    work_dir = edit_dir(instance_id)
+    work_dir = project_root()
     if not baseline_dir.is_dir():
         raise SystemExit(f"Missing baseline/ for {instance_id}")
     if not work_dir.is_dir():
-        raise SystemExit(f"Missing {edit_dir_label()} for {instance_id}")
+        raise SystemExit(f"Missing project/ for {instance_id}")
 
     restored: list[str] = []
     for rel_path in patch_file_list(meta) or meta.get("files", []):
@@ -788,14 +628,14 @@ def reset_workspace_edits(instance_id: str) -> Path:
     if not restored:
         raise SystemExit(f"No files restored for {instance_id}")
 
-    print(f"Restored {len(restored)} file(s) from baseline/ → {edit_dir_short_label()}")
+    print(f"Restored {len(restored)} file(s) from baseline/ → project/")
     for path in restored:
         print(f"  - {path}")
     return root
 
 
 GSO_PLACEHOLDER_MARKER = "gso-placeholder"
-GSO_LEGACY_PLACEHOLDER_MARKERS = ("gso-noop", GSO_PLACEHOLDER_MARKER)
+GSO_PLACEHOLDER_MARKERS = (GSO_PLACEHOLDER_MARKER, "gso-noop")
 
 
 def placeholder_marker_for_file(rel_path: str) -> str:
@@ -844,7 +684,6 @@ def build_patch(
     instance_id: str,
     model_name: str = "local-edit",
     *,
-    skip_if_unchanged: bool = False,
     placeholder_on_unchanged: bool = False,
 ) -> tuple[str, Path] | None:
     require_active_task(instance_id, action="compile", checkout_on_switch=True)
@@ -852,7 +691,7 @@ def build_patch(
     meta = load_metadata(instance_id)
     root = workspace_dir(instance_id)
     baseline_dir = root / "baseline"
-    work_dir = edit_dir(instance_id)
+    work_dir = project_root()
     rel_files = patch_file_list(meta)
     if not rel_files:
         rel_files = list(meta.get("files", []))
@@ -866,7 +705,7 @@ def build_patch(
         if not edited.exists():
             raise SystemExit(
                 f"Missing edited file: {edited}\n"
-                f"Run: {compile_command_hint(instance_id)}"
+                f"Run: {prepare_command_hint(instance_id)}"
             )
 
         proc = subprocess.run(
@@ -890,7 +729,7 @@ def build_patch(
             raise SystemExit(proc.stderr or "diff failed")
 
     patch = "".join(chunks)
-    edit_label = edit_dir_label().rstrip("/")
+    edit_label = "project"
     if not patch.strip():
         if placeholder_on_unchanged:
             rel_path = rel_files[0]
@@ -899,9 +738,6 @@ def build_patch(
                 f"No code changes in {edit_label}/ for {instance_id}; "
                 "using automatic placeholder marker so the harness can run."
             )
-        elif skip_if_unchanged:
-            print(f"Skipping {instance_id}: no changes in {edit_label}/")
-            return None
         else:
             raise SystemExit(
                 f"No changes found between baseline/ and {edit_label}/. "
@@ -924,133 +760,11 @@ def build_patch(
     return patch, predictions_path
 
 
-def _curated_task_ids() -> list[str]:
-    root = benchmark_root()
-    runner = _runner_module()
-    if root and runner is not None:
-        return runner.list_instance_ids(root)
-    return []
-
-
-def compile_all_patches(
-    model_name: str = "local-edit",
-    *,
-    skip_if_unchanged: bool = True,
-    setup_missing: bool = True,
-) -> dict[str, list[str]]:
-    compiled: list[str] = []
-    skipped: list[str] = []
-    failed: list[str] = []
-    prepared: list[str] = []
-
-    curated_ids = _curated_task_ids()
-    dataset_by_id = {t.instance_id: t for t in load_gso_dataset()}
-    if curated_ids:
-        missing = [i for i in curated_ids if i not in dataset_by_id]
-        if missing:
-            print(
-                f"Warning: {len(missing)} tasks in benchmarks/ "
-                f"not found in GSO dataset"
-            )
-        tasks = [dataset_by_id[i] for i in curated_ids if i in dataset_by_id]
-        print(f"Processing {len(tasks)} curated tasks from benchmarks/...")
-    else:
-        tasks = load_gso_dataset()
-        print(f"Processing {len(tasks)} GSO tasks (full dataset)...")
-
-    WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
-    all_predictions: list[dict] = []
-
-    for index, instance in enumerate(tasks, start=1):
-        instance_id = instance.instance_id
-        print(f"\n[{index}/{len(tasks)}] {instance_id}")
-
-        try:
-            if not metadata_path(instance_id).exists():
-                if not setup_missing:
-                    print(f"Skipping {instance_id}: workspace not prepared")
-                    skipped.append(instance_id)
-                    continue
-                print(f"Preparing workspace for {instance_id}...")
-                setup_workspace(instance_id)
-                prepared.append(instance_id)
-
-            result = build_patch(
-                instance_id,
-                model_name,
-                skip_if_unchanged=skip_if_unchanged,
-            )
-            if result is None:
-                skipped.append(instance_id)
-            else:
-                compiled.append(instance_id)
-                pred_line = predictions_path(instance_id).read_text().strip()
-                if pred_line:
-                    all_predictions.append(json.loads(pred_line))
-        except SystemExit as exc:
-            print(f"Failed {instance_id}: {exc}")
-            failed.append(instance_id)
-
-    combined_path = WORKSPACE_ROOT / "all_predictions.jsonl"
-    if all_predictions:
-        combined_path.write_text(
-            "\n".join(json.dumps(p) for p in all_predictions) + "\n"
-        )
-
-    print("")
-    print(f"Total tasks: {len(tasks)}")
-    print(f"Newly prepared: {len(prepared)}")
-    print(f"Compiled: {len(compiled)}")
-    print(f"Skipped (unchanged / not prepared): {len(skipped)}")
-    print(f"Failed: {len(failed)}")
-    if all_predictions:
-        print(f"Combined predictions: {combined_path}")
-    if compiled:
-        print("Compiled patches:")
-        for instance_id in compiled:
-            print(f"  - {instance_id}")
-    return {
-        "compiled": compiled,
-        "skipped": skipped,
-        "failed": failed,
-        "prepared": prepared,
-    }
-
-
 def docker_image_name(instance) -> str:
     return (
         f"{DOCKER_NAMESPACE}:gso.eval.{instance.arch}."
         f"{instance.instance_id.lower()}"
     )
-
-
-def ensure_docker_image(instance, *, pull: bool = True) -> str:
-    verified = verify_instance_image(instance.instance_id, pull=pull)
-    if verified:
-        return verified["target"]["image"]
-
-    image = docker_image_name(instance)
-    inspect = subprocess.run(
-        ["docker", "image", "inspect", image],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if inspect.returncode == 0:
-        print(f"Docker image already present: {image}")
-        return image
-
-    if not pull:
-        hint = (
-            f"./pydantic pull-images {instance.instance_id}"
-            if benchmark_root()
-            else f"docker pull {image}"
-        )
-        raise SystemExit(f"Docker image missing: {image}\nRun: {hint}")
-
-    print(f"Pulling docker image: {image}")
-    run(["docker", "pull", image])
-    return image
 
 
 def remove_docker_image(image: str) -> None:
@@ -1080,76 +794,64 @@ def predictions_path(instance_id: str) -> Path:
     return workspace_dir(instance_id) / "predictions.jsonl"
 
 
-def outputs_dir(instance_id: str) -> Path:
-    return workspace_dir(instance_id) / "output"
+def hub_artemis_benchmark_path() -> Path:
+    return hub_root() / ARTEMIS_BENCHMARK_FILENAME
 
 
-def harness_dir(instance_id: str) -> Path:
-    return workspace_dir(instance_id) / "harness"
+def hub_artemis_benchmark_robust_path() -> Path:
+    return hub_root() / ARTEMIS_BENCHMARK_ROBUST_FILENAME
 
 
-def harness_run_dir(instance_id: str, run_id: str) -> Path:
-    if benchmark_root():
-        return harness_dir(instance_id)
-    legacy = workspace_dir(instance_id) / "eval" / run_id
-    if legacy.exists() and not (harness_dir(instance_id) / run_id).exists():
-        return legacy
-    return harness_dir(instance_id) / run_id
+def hub_artemis_test_path() -> Path:
+    return hub_root() / ARTEMIS_TEST_FILENAME
 
 
-def eval_run_dir(instance_id: str, run_id: str) -> Path:
-    """Deprecated alias: use harness_run_dir."""
-    return harness_run_dir(instance_id, run_id)
+def hub_summary_path() -> Path:
+    return hub_root() / "summary.txt"
 
 
-def output_run_dir(instance_id: str, run_id: str) -> Path:
-    if benchmark_root():
-        return outputs_dir(instance_id)
-    return outputs_dir(instance_id) / run_id
-
-
-def results_dir(instance_id: str) -> Path:
-    """Deprecated: use outputs_dir / output_run_dir."""
-    return workspace_dir(instance_id) / "results"
-
-
-def legacy_outputs_dir(instance_id: str) -> Path:
-    """Pre-rename layout: workspace/<id>/outputs/<run_id>/"""
-    return workspace_dir(instance_id) / "outputs"
-
-
-def sync_eval_artifacts(
-    instance_id: str, run_id: str, model_name: str = "local-edit"
-) -> Path:
-    """Copy raw harness reports into eval/<task>/harness/<run_id>/."""
-    run_dir = harness_run_dir(instance_id, run_id)
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    run_report = find_run_report(run_id, model_name, instance_id)
-    if run_report and run_report.exists():
-        dest = run_dir / "run_report.json"
-        if run_report.resolve() != dest.resolve():
-            shutil.copy2(run_report, dest)
-
-    inst_path = instance_report_path(instance_id, run_id, model_name)
-    if inst_path.is_file():
-        dest = run_dir / "instance_report.json"
-        if inst_path.resolve() != dest.resolve():
-            shutil.copy2(inst_path, dest)
+def _format_baseline_opt_line(
+    passed: bool | None, percent_faster: float | None
+) -> str:
+    need = BASELINE_OPT_PERCENT
+    if percent_faster is None:
+        if passed is None:
+            return "n/a"
+        return (
+            f"yes (≥{need}% faster required)"
+            if passed
+            else f"no (≥{need}% faster required)"
+        )
+    if percent_faster >= 0:
+        actual = f"{percent_faster:.2f}% faster than baseline"
     else:
-        cached = cached_instance_report_path(instance_id, run_id)
-        if cached is not None:
-            dest = run_dir / "instance_report.json"
-            if cached.resolve() != dest.resolve():
-                shutil.copy2(cached, dest)
+        actual = f"{abs(percent_faster):.2f}% slower than baseline"
+    if passed:
+        return f"yes — {actual} (≥{need}% required)"
+    return f"no — {actual} (needs ≥{need}%)"
 
-    return run_dir
+
+def _format_expert_opt_line(
+    passed: bool | None, parity_percent: float | None
+) -> str:
+    need = EXPERT_MATCH_PERCENT
+    if parity_percent is None:
+        if passed is None:
+            return "n/a"
+        return (
+            f"yes (≥{need}% of expert speed required)"
+            if passed
+            else f"no (≥{need}% of expert speed required)"
+        )
+    if passed:
+        return f"yes — {parity_percent:.1f}% of expert speed (≥{need}% required)"
+    return f"no — {parity_percent:.1f}% of expert speed (needs ≥{need}%)"
 
 
 def write_comparison_summary(
     instance_id: str, run_id: str, model_name: str = "local-edit"
 ) -> Path:
-    """Human-readable baseline vs optimized summary in output/<run_id>/summary.txt."""
+    """Human-readable baseline vs project summary at hub root summary.txt."""
     instance_report = load_instance_report(instance_id, run_id, model_name)
     parts = build_improvement_summary(instance_report, instance_id=instance_id)
     summary = parts["summary"]
@@ -1164,6 +866,15 @@ def write_comparison_summary(
         if value is None:
             return "n/a"
         return f"{value:.6f}s"
+
+    def _harness_status(value: bool | None, *, yes: str, no: str) -> str:
+        if value is None:
+            return "n/a"
+        return yes if value else no
+
+    run_ok = harness.get("tests_passed")
+    if run_ok is None:
+        run_ok = instance_report.get("test_passed")
 
     provenance = build_provenance(
         instance_id, datetime.now(timezone.utc).isoformat()
@@ -1209,43 +920,27 @@ def write_comparison_summary(
         "",
         "vs expert",
         f"  parity_percent: {vs_expert.get('parity_percent')}%",
+        f"  comparison:     {vs_expert.get('comparison')}",
         f"  matches_expert: {vs_expert.get('matches_expert')}",
-        f"  runtime_ratio:  {vs_expert.get('runtime_ratio')}x (optimized / expert)",
         "",
-        "confidence (vs baseline)",
+        "Confidence",
         f"  {confidence.get('interpretation', '')}",
         "",
         "Harness",
-        f"  tests_passed:      {harness.get('tests_passed')}",
-        f"  opt_base_passed:   {harness.get('opt_base_passed')}",
-        f"  opt_commit_passed: {harness.get('opt_commit_passed')}",
-        f"  test_passed:       {instance_report.get('test_passed')}",
+        f"  benchmark_completed:  {_harness_status(run_ok, yes='yes', no='no — run failed or incomplete')}",
+        f"  beat_baseline:        {_format_baseline_opt_line(harness.get('opt_base_passed'), vs_base.get('percent_faster'))}",
+        f"  matches_expert:       {_format_expert_opt_line(harness.get('opt_commit_passed'), vs_expert.get('parity_percent'))}",
         "",
-        "Files",
-        f"  harness: {harness_run_dir(instance_id, run_id)}",
-        f"  output: {output_run_dir(instance_id, run_id)}",
-        f"    artemis_results.json",
-        f"    artemis_results_robust.json",
-        f"    tests_artemis_results.json",
+        "Results (hub root)",
+        f"  {hub_artemis_benchmark_path()}",
+        f"  {hub_artemis_test_path()}",
+        f"  {hub_summary_path()}",
         ]
     )
-    if benchmark_root():
-        hub_copy = workspace_root_artemis_path(instance_id)
-        if hub_copy.exists():
-            lines.append(f"  hub: {hub_copy}")
 
-    out_dir = output_run_dir(instance_id, run_id)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / "summary.txt"
+    path = hub_summary_path()
     path.write_text("\n".join(lines) + "\n")
     return path
-
-
-def finalize_run_outputs(
-    instance_id: str, run_id: str, model_name: str = "local-edit"
-) -> None:
-    sync_eval_artifacts(instance_id, run_id, model_name)
-    write_comparison_summary(instance_id, run_id, model_name)
 
 
 def instance_report_path(
@@ -1261,49 +956,6 @@ def instance_report_path(
     )
 
 
-def cached_instance_report_path(instance_id: str, run_id: str) -> Path | None:
-    """Synced copy under eval/<task>/harness/ (survives if logs/ were elsewhere)."""
-    for base in (
-        harness_run_dir(instance_id, run_id),
-        harness_dir(instance_id),
-    ):
-        path = base / "instance_report.json"
-        if path.is_file():
-            return path
-    return None
-
-
-def cached_run_report_path(instance_id: str, run_id: str) -> Path | None:
-    for base in (
-        harness_run_dir(instance_id, run_id),
-        harness_dir(instance_id),
-    ):
-        path = base / "run_report.json"
-        if path.is_file():
-            return path
-    return None
-
-
-def find_run_report(
-    run_id: str, model_name: str, instance_id: str | None = None
-) -> Path | None:
-    safe_model = model_name.replace("/", "__")
-    direct = (
-        gso_log_dir()
-        / run_id
-        / safe_model
-        / f"{safe_model}.{run_id}.report.json"
-    )
-    if direct.exists():
-        return direct
-    matches = list(gso_log_dir().rglob(f"*.{run_id}.report.json"))
-    if matches:
-        return matches[0]
-    if instance_id is not None:
-        return cached_run_report_path(instance_id, run_id)
-    return None
-
-
 def _read_instance_report_file(path: Path, instance_id: str) -> dict:
     report = json.loads(path.read_text())
     if instance_id not in report:
@@ -1317,13 +969,9 @@ def load_instance_report(
     path = instance_report_path(instance_id, run_id, model_name)
     if path.is_file():
         return _read_instance_report_file(path, instance_id)
-    cached = cached_instance_report_path(instance_id, run_id)
-    if cached is not None:
-        return _read_instance_report_file(cached, instance_id)
     raise SystemExit(
-        f"No harness report at {path} "
-        f"(or eval harness cache). "
-        f"Run: {harness_command_hint(instance_id, action='benchmark')}"
+        f"No GSO harness report at {path}. "
+        f"Run: {harness_command_hint(instance_id)}"
     )
 
 
@@ -1336,20 +984,19 @@ def run_harness(
     max_workers: int = 1,
     pull_image: bool = True,
     ephemeral_image: bool = True,
-    harness_action: str = "benchmark",
 ) -> str:
     instance = load_instance(instance_id)
-    require_active_task(instance_id, action=harness_action)
+    require_active_task(instance_id, action="benchmark")
     pred_path = predictions_path(instance_id)
     if not pred_path.exists():
         raise SystemExit(
             f"Missing predictions at {pred_path}. "
-            f"Run: {compile_command_hint(instance_id)}"
+            f"Run: {prepare_command_hint(instance_id)}"
         )
 
     if pull_image:
-        ensure_docker_image(instance, pull=True)
-    elif benchmark_root() and _runner_module():
+        verify_instance_image(instance.instance_id, pull=True)
+    else:
         verify_instance_image(instance_id, pull=False)
 
     run_id = run_id or f"local-{instance_id}"
@@ -1370,9 +1017,7 @@ def run_harness(
         "--verbose",
     ]
     cmd = [sys.executable, "-m", "gso.harness.run_evaluation", *harness_args]
-    harness_cwd = Path(
-        os.environ.get("GSO_WORKSPACE_ROOT", str(WORKSPACE_ROOT))
-    ).resolve()
+    harness_cwd = hub_root().resolve()
     print("Running GSO harness...")
     try:
         env = os.environ.copy()
@@ -1385,31 +1030,11 @@ def run_harness(
     return run_id
 
 
-def artemis_benchmark_path(instance_id: str, run_id: str) -> Path:
-    return output_run_dir(instance_id, run_id) / ARTEMIS_BENCHMARK_FILENAME
-
-
-def artemis_benchmark_robust_path(instance_id: str, run_id: str) -> Path:
-    return output_run_dir(instance_id, run_id) / ARTEMIS_BENCHMARK_ROBUST_FILENAME
-
-
-def workspace_root_artemis_path(instance_id: str) -> Path:
-    """Convenience copy overwritten each benchmark run.
-
-    Pydantic hub: repos/pydantic/artemis_results.json
-    GSO workspace: workspace/<instance_id>/artemis_results.json
-    """
-    if root := benchmark_root():
-        return root / ARTEMIS_BENCHMARK_FILENAME
-    return workspace_dir(instance_id) / ARTEMIS_BENCHMARK_FILENAME
-
-
-def artemis_test_path(instance_id: str, run_id: str) -> Path:
-    return output_run_dir(instance_id, run_id) / ARTEMIS_TEST_FILENAME
-
-
 IMPROVEMENT_NOISE_PERCENT = 0.5
 EXPERT_MATCH_THRESHOLD = 0.95
+BASELINE_OPT_SPEEDUP = 1.2  # GSO MIN_PROB_SPEEDUP — gm speedup required for opt_base
+BASELINE_OPT_PERCENT = int(round((BASELINE_OPT_SPEEDUP - 1.0) * 100.0))
+EXPERT_MATCH_PERCENT = int(round(EXPERT_MATCH_THRESHOLD * 100.0))
 BOOTSTRAP_SAMPLES = 5000
 BOOTSTRAP_CI = 0.95
 
@@ -1456,6 +1081,27 @@ def _slim_vs_baseline(
     return out
 
 
+def _expert_speed_comparison(
+    *,
+    runtime_ratio: float | None = None,
+    gm_vs_expert: float | None = None,
+) -> str | None:
+    """Human-readable expert vs optimized speed (runtime_ratio = optimized / expert)."""
+    if gm_vs_expert is not None:
+        if gm_vs_expert >= EXPERT_MATCH_THRESHOLD:
+            return "Matches expert speed"
+        if gm_vs_expert >= 1.0:
+            return f"You are ~{gm_vs_expert:.1f}× faster than expert"
+        return f"Expert is ~{1.0 / gm_vs_expert:.1f}× faster than you"
+    if runtime_ratio is None:
+        return None
+    if runtime_ratio <= 1.0 / EXPERT_MATCH_THRESHOLD:
+        return "Matches expert speed"
+    if runtime_ratio > 1.0:
+        return f"Expert is ~{runtime_ratio:.1f}× faster than you"
+    return f"You are ~{1.0 / runtime_ratio:.1f}× faster than expert"
+
+
 def _slim_vs_expert(
     expert_s: float | None,
     optimized_s: float | None,
@@ -1473,9 +1119,14 @@ def _slim_vs_expert(
         if gm_vs_expert is not None
         else ratio is not None and ratio <= (1.0 / EXPERT_MATCH_THRESHOLD)
     )
+    comparison = _expert_speed_comparison(
+        runtime_ratio=ratio, gm_vs_expert=gm_vs_expert
+    )
     out: dict = {"matches_expert": matches}
     if parity is not None:
         out["parity_percent"] = parity
+    if comparison is not None:
+        out["comparison"] = comparison
     delta = _seconds_from_expert(expert_s, optimized_s)
     if delta is not None:
         out["time_delta_s"] = delta
@@ -1493,23 +1144,28 @@ def _confidence_interpretation(
 ) -> str | None:
     if estimate is None or ci_low is None or ci_high is None:
         return None
-    intro = (
-        f"Speedup ratio {estimate:.3f}× (baseline_time ÷ optimized_time). "
-        f"95% confidence interval: {ci_low:.3f}–{ci_high:.3f}×."
-    )
+    pct = _percent_faster(estimate)
+    if pct is None:
+        return None
+
     if includes_no_change:
+        if abs(pct) < 0.1:
+            avg = "about the same speed as"
+        elif pct > 0:
+            avg = f"about {pct:.1f}% faster than"
+        else:
+            avg = f"about {abs(pct):.1f}% slower than"
         return (
-            f"{intro} Interval includes 1.0 (no change), so we cannot rule out "
-            "that the difference is harness measurement noise."
+            f"Optimized is {avg} baseline, but timings bounce around enough between "
+            "runs that we can't tell if that's real — likely just measurement noise."
         )
     if estimate > 1.0:
         return (
-            f"{intro} Interval excludes 1.0 — optimized is significantly "
-            "faster than baseline."
+            f"Optimized is reliably faster than baseline (about {pct:.1f}% on average)."
         )
     return (
-        f"{intro} Interval excludes 1.0 — optimized is significantly "
-        "slower than baseline."
+        f"Optimized is reliably slower than baseline "
+        f"(about {abs(pct):.1f}% on average)."
     )
 
 
@@ -1603,7 +1259,7 @@ def _is_placeholder_patch(instance_id: str) -> bool:
     if not patch_path.exists():
         return False
     text = patch_path.read_text()
-    if not any(marker in text for marker in GSO_LEGACY_PLACEHOLDER_MARKERS):
+    if not any(marker in text for marker in GSO_PLACEHOLDER_MARKERS):
         return False
     changed = [
         line
@@ -1617,7 +1273,7 @@ def _is_placeholder_patch(instance_id: str) -> bool:
 def _workspace_files_unchanged(instance_id: str) -> bool:
     meta = load_metadata(instance_id)
     baseline_dir = workspace_dir(instance_id) / "baseline"
-    work_dir = edit_dir(instance_id)
+    work_dir = project_root()
     if not baseline_dir.is_dir() or not work_dir.is_dir():
         return False
     for rel_path in patch_file_list(meta) or meta.get("files", []):
@@ -1783,7 +1439,6 @@ def _improvement_headline(
     *,
     within_noise: bool,
     significant: bool,
-    confidence: dict,
     patch_meta: dict,
     tests_faster: int,
     tests_total: int,
@@ -1792,24 +1447,10 @@ def _improvement_headline(
     if gm_patch_base is None:
         return "Benchmark comparison unavailable."
 
-    ci = confidence.get("ci_95", {})
-    ci_lo = ci.get("low", confidence.get("ci_95_low"))
-    ci_hi = ci.get("high", confidence.get("ci_95_high"))
-    includes_no_change = ci.get("includes_no_change", confidence.get("includes_no_change"))
-    ci_note = (
-        f" (95% CI for speedup ratio: {ci_lo}–{ci_hi}, includes 1.0 = no change)"
-        if ci_lo is not None and includes_no_change
-        else (
-            f" (95% CI for speedup ratio: {ci_lo}–{ci_hi})"
-            if ci_lo is not None
-            else ""
-        )
-    )
-
     if _patch_is_placeholder(patch_meta) or not patch_meta.get("code_changes", True):
         if within_noise or not significant:
             return (
-                f"No measurable improvement vs baseline{ci_note}. "
+                "No measurable improvement vs baseline. "
                 "Likely measurement noise (unchanged code)."
             )
 
@@ -1819,33 +1460,33 @@ def _improvement_headline(
         )
         if near_expert:
             return (
-                "No statistically significant change vs baseline"
-                f"{ci_note}. Likely measurement noise. Already near expert speed."
+                "No statistically significant change vs baseline. "
+                "Likely measurement noise. Already near expert speed."
             )
         return (
-            f"No statistically significant change vs baseline{ci_note}. "
+            "No statistically significant change vs baseline. "
             "Likely measurement noise."
         )
 
     if gm_patch_base < 1.0:
         return (
             f"Patch is significantly slower than baseline "
-            f"({abs(pct_faster or 0):.1f}% slower){ci_note}."
+            f"({abs(pct_faster or 0):.1f}% slower)."
         )
     if gm_patch_commit is not None and gm_patch_commit >= EXPERT_MATCH_THRESHOLD:
         return (
             f"Patch is significantly {pct_faster:.1f}% faster than baseline "
-            f"({tests_faster}/{tests_total} tests faster) and matches expert{ci_note}."
+            f"({tests_faster}/{tests_total} tests faster) and matches expert."
         )
     if gm_patch_commit is not None:
-        expert_pct = round(gm_patch_commit * 100.0, 1)
+        comparison = _expert_speed_comparison(gm_vs_expert=gm_patch_commit)
         return (
             f"Patch is significantly {pct_faster:.1f}% faster than baseline, "
-            f"but only {expert_pct}% of expert speed{ci_note}."
+            f"but {comparison.lower()}."
         )
     return (
         f"Patch is significantly {pct_faster:.1f}% faster than baseline"
-        f" ({tests_faster}/{tests_total} tests faster){ci_note}."
+        f" ({tests_faster}/{tests_total} tests faster)."
     )
 
 
@@ -1922,7 +1563,6 @@ def build_improvement_summary(
         gm_patch_commit,
         within_noise=within_noise,
         significant=significant,
-        confidence=confidence,
         patch_meta=patch_meta,
         tests_faster=tests_faster,
         tests_total=tests_total,
@@ -2033,21 +1673,6 @@ def build_artemis_benchmark_payload(
     return payload
 
 
-def _harness_report_relpath(
-    instance_id: str, run_id: str, model_name: str
-) -> str:
-    path = instance_report_path(instance_id, run_id, model_name)
-    hub = hub_root()
-    try:
-        return str(path.relative_to(hub))
-    except ValueError:
-        safe_model = model_name.replace("/", "__")
-        return (
-            f"logs/run_evaluation/{run_id}/{safe_model}/"
-            f"{instance_id}/report.json"
-        )
-
-
 _VERDICT_TO_INT = {
     "unavailable": -1,
     "no_change": 0,
@@ -2062,15 +1687,11 @@ _MODEL_NAME_TO_INT = {"local-edit": 0}
 
 
 def _task_index(instance_id: str) -> int:
-    root = benchmark_root() or hub_root()
-    runner = _runner_module()
-    if runner is not None:
-        ids = runner.list_instance_ids(root)
-        try:
-            return ids.index(instance_id)
-        except ValueError:
-            pass
-    return int(hashlib.sha256(instance_id.encode()).hexdigest()[:8], 16)
+    ids = _runner_module().list_instance_ids(benchmark_root())
+    try:
+        return ids.index(instance_id)
+    except ValueError:
+        return int(hashlib.sha256(instance_id.encode()).hexdigest()[:8], 16)
 
 
 def _run_id_numeric(run_id: str) -> int:
@@ -2278,10 +1899,8 @@ def write_benchmark_json(
     model_name: str = "local-edit",
 ) -> Path:
     instance_report = load_instance_report(instance_id, run_id, model_name)
-    run_dir = output_run_dir(instance_id, run_id)
-    run_dir.mkdir(parents=True, exist_ok=True)
-    robust_out = artemis_benchmark_robust_path(instance_id, run_id)
-    numeric_out = artemis_benchmark_path(instance_id, run_id)
+    robust_out = hub_artemis_benchmark_robust_path()
+    numeric_out = hub_artemis_benchmark_path()
     robust_payload = build_artemis_benchmark_payload(
         instance_id, run_id, model_name, instance_report
     )
@@ -2292,12 +1911,8 @@ def write_benchmark_json(
     numeric_out.write_text(json.dumps(numeric_payload, indent=2))
     print(f"Wrote benchmark results (robust): {robust_out}")
     print(f"Wrote benchmark results (numeric): {numeric_out}")
-    root_copy = workspace_root_artemis_path(instance_id)
-    shutil.copy2(numeric_out, root_copy)
-    copy_label = "hub root" if benchmark_root() else "workspace root"
-    print(f"Wrote benchmark results ({copy_label}, numeric): {root_copy}")
-    finalize_run_outputs(instance_id, run_id, model_name)
-    summary_path = output_run_dir(instance_id, run_id) / "summary.txt"
+    write_comparison_summary(instance_id, run_id, model_name)
+    summary_path = hub_summary_path()
     if summary_path.exists():
         print(f"Wrote comparison summary: {summary_path}")
     return numeric_out
@@ -2309,15 +1924,12 @@ def write_test_json(
     model_name: str = "local-edit",
 ) -> Path:
     instance_report = load_instance_report(instance_id, run_id, model_name)
-    run_dir = output_run_dir(instance_id, run_id)
-    run_dir.mkdir(parents=True, exist_ok=True)
-    out = artemis_test_path(instance_id, run_id)
+    out = hub_artemis_test_path()
     payload = build_artemis_test_payload(
         instance_id, run_id, model_name, instance_report
     )
     out.write_text(json.dumps(payload, indent=2))
     print(f"Wrote test results: {out}")
-    finalize_run_outputs(instance_id, run_id, model_name)
     return out
 
 
@@ -2335,10 +1947,7 @@ def benchmark_patch(
     require_active_task(instance_id, action="benchmark")
     run_id = run_id or f"benchmark-{instance_id}"
     report_path = instance_report_path(instance_id, run_id, model_name)
-    cached = cached_instance_report_path(instance_id, run_id)
-    if not reuse_report or not (
-        report_path.is_file() or cached is not None
-    ):
+    if not reuse_report or not report_path.is_file():
         run_harness(
             instance_id,
             model_name=model_name,
@@ -2351,108 +1960,9 @@ def benchmark_patch(
     return write_benchmark_json(instance_id, run_id, model_name)
 
 
-def test_patch(
-    instance_id: str,
-    *,
-    model_name: str = "local-edit",
-    run_id: str | None = None,
-    timeout: int = 1800,
-    max_workers: int = 1,
-    pull_image: bool = True,
-    ephemeral_image: bool = True,
-    reuse_report: bool = False,
-) -> Path:
-    require_active_task(instance_id, action="test")
-    run_id = run_id or f"test-{instance_id}"
-    report_path = instance_report_path(instance_id, run_id, model_name)
-    cached = cached_instance_report_path(instance_id, run_id)
-    if not reuse_report or not (
-        report_path.is_file() or cached is not None
-    ):
-        run_harness(
-            instance_id,
-            model_name=model_name,
-            run_id=run_id,
-            timeout=timeout,
-            max_workers=max_workers,
-            pull_image=pull_image,
-            ephemeral_image=ephemeral_image,
-            harness_action="test",
-        )
-
-
-def evaluate_patch(
-    instance_id: str,
-    *,
-    model_name: str = "local-edit",
-    run_id: str | None = None,
-    timeout: int = 1800,
-    max_workers: int = 1,
-    pull_image: bool = True,
-    ephemeral_image: bool = True,
-) -> Path:
-    run_id = run_harness(
-        instance_id,
-        model_name=model_name,
-        run_id=run_id,
-        timeout=timeout,
-        max_workers=max_workers,
-        pull_image=pull_image,
-        ephemeral_image=ephemeral_image,
-    )
-
-    run_report = find_run_report(run_id, model_name, instance_id)
-    run_output_dir = output_run_dir(instance_id, run_id)
-    run_output_dir.mkdir(parents=True, exist_ok=True)
-    if run_report and run_report.exists():
-        sync_eval_artifacts(instance_id, run_id, model_name)
-
-    benchmark_path = write_benchmark_json(instance_id, run_id, model_name)
-    test_path = write_test_json(instance_id, run_id, model_name)
-
-    instance_report = load_instance_report(instance_id, run_id, model_name)
-    summary_dst = run_output_dir / "summary.txt"
-    lines = [
-        f"instance_id: {instance_id}",
-        f"run_id: {run_id}",
-        f"passed: {instance_report.get('test_passed')}",
-        f"opt(base): {instance_report.get('opt_base')}",
-        f"opt(commit): {instance_report.get('opt_commit')}",
-        f"opt(main): {instance_report.get('opt_main')}",
-        f"benchmark: {benchmark_path}",
-        f"test: {test_path}",
-        f"output_dir: {run_output_dir}",
-    ]
-    summary_dst.write_text("\n".join(lines) + "\n")
-    print("\n".join(lines))
-    return test_path
-
-
-def run_all(args: argparse.Namespace) -> None:
-    setup_workspace(
-        args.instance_id,
-        args.files,
-        force=args.force,
-        include_tests=args.include_tests,
-    )
-    if not args.skip_eval:
-        build_patch(args.instance_id, model_name=args.model_name)
-        evaluate_patch(
-            args.instance_id,
-            model_name=args.model_name,
-            run_id=args.run_id,
-            timeout=args.timeout,
-            max_workers=args.max_workers,
-            pull_image=not args.no_pull,
-            ephemeral_image=args.ephemeral_image,
-        )
-    else:
-        print("Skipping patch/eval. Edit optimized/, then run patch and eval.")
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Local baseline/optimized folder workflow for GSO."
+        description="Local project/ + eval/baseline workflow for GSO."
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -2472,65 +1982,21 @@ def main() -> None:
 
     reset = sub.add_parser(
         "reset",
-        help="Restore editable files from baseline/ (discard edits in repo/ or optimized/)",
+        help="Restore editable files from baseline/ (discard edits in project/)",
     )
     reset.add_argument("instance_id")
 
     patch = sub.add_parser("patch", help="Build patch.diff and predictions.jsonl")
-    patch.add_argument("instance_id", nargs="?")
+    patch.add_argument("instance_id")
     patch.add_argument("--model-name", default="local-edit")
-    patch.add_argument(
-        "--all",
-        action="store_true",
-        help="Compile patches for every GSO task (default when no instance_id)",
-    )
-    patch.add_argument(
-        "--no-setup",
-        action="store_true",
-        help="With --all, only compile tasks that already have a workspace",
-    )
-    patch.add_argument(
-        "--fail-on-unchanged",
-        action="store_true",
-        help="With --all, treat unchanged workspaces as failures",
-    )
     patch.add_argument(
         "--placeholder-on-unchanged",
         action=argparse.BooleanOptionalAction,
         default=True,
         help=(
-            "When baseline/ and optimized/ are identical (no code changes), emit an "
+            "When baseline/ and project/ are identical (no code changes), emit an "
             "automatic gso-placeholder comment in patch.diff (default: on)"
         ),
-    )
-
-    patch_all = sub.add_parser(
-        "patch-all",
-        help="Compile patches for all prepared workspaces under workspace/",
-    )
-    patch_all.add_argument("--model-name", default="local-edit")
-    patch_all.add_argument(
-        "--no-setup",
-        action="store_true",
-        help="Only compile tasks that already have a workspace",
-    )
-    patch_all.add_argument(
-        "--fail-on-unchanged",
-        action="store_true",
-        help="Treat unchanged workspaces as failures",
-    )
-
-    eval_cmd = sub.add_parser("eval", help="Evaluate predictions with GSO harness")
-    eval_cmd.add_argument("instance_id")
-    eval_cmd.add_argument("--model-name", default="local-edit")
-    eval_cmd.add_argument("--run-id")
-    eval_cmd.add_argument("--timeout", type=int, default=1800)
-    eval_cmd.add_argument("--max-workers", type=int, default=1)
-    eval_cmd.add_argument("--no-pull", action="store_true")
-    eval_cmd.add_argument(
-        "--keep-image",
-        action="store_true",
-        help="Keep the Docker image after grading (default: remove to save disk)",
     )
 
     benchmark = sub.add_parser(
@@ -2554,52 +2020,16 @@ def main() -> None:
     )
 
     test_cmd = sub.add_parser(
-        "test", help="Run GSO tests and save test results JSON"
+        "test", help="Write test results JSON from the benchmark harness report"
     )
     test_cmd.add_argument("instance_id")
     test_cmd.add_argument("--model-name", default="local-edit")
     test_cmd.add_argument("--run-id")
-    test_cmd.add_argument("--timeout", type=int, default=1800)
-    test_cmd.add_argument("--max-workers", type=int, default=1)
-    test_cmd.add_argument("--no-pull", action="store_true")
-    test_cmd.add_argument(
-        "--keep-image",
-        action="store_true",
-        help="Keep the Docker image after grading (default: remove to save disk)",
-    )
-    test_cmd.add_argument(
-        "--reuse-report",
-        action="store_true",
-        help="Skip harness if report already exists for this run-id",
-    )
     test_cmd.add_argument(
         "--from-benchmark",
-        action="store_true",
-        help="Read results from benchmark run-id (no new harness run)",
-    )
-
-    run = sub.add_parser(
-        "run",
-        help="setup + patch + eval (use --skip-eval to only create workspace)",
-    )
-    run.add_argument("instance_id")
-    run.add_argument("--files", nargs="+")
-    run.add_argument("--force", action="store_true")
-    run.add_argument(
-        "--include-tests",
-        action="store_true",
-        help="Also copy test files from gt_diff (default: source files only)",
-    )
-    run.add_argument("--skip-eval", action="store_true")
-    run.add_argument("--model-name", default="local-edit")
-    run.add_argument("--run-id")
-    run.add_argument("--timeout", type=int, default=1800)
-    run.add_argument("--max-workers", type=int, default=1)
-    run.add_argument("--no-pull", action="store_true")
-    run.add_argument(
-        "--keep-image",
-        action="store_true",
-        help="Keep the Docker image after grading (default: remove to save disk)",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Read results from benchmark run-id (default: on)",
     )
 
     args = parser.parse_args()
@@ -2618,39 +2048,10 @@ def main() -> None:
     elif args.command == "reset":
         reset_workspace_edits(args.instance_id)
     elif args.command == "patch":
-        if args.all or not args.instance_id:
-            result = compile_all_patches(
-                model_name=args.model_name,
-                skip_if_unchanged=not args.fail_on_unchanged,
-                setup_missing=not args.no_setup,
-            )
-            if result["failed"] or (
-                args.fail_on_unchanged and result["skipped"]
-            ):
-                sys.exit(1)
-        else:
-            build_patch(
-                args.instance_id,
-                model_name=args.model_name,
-                placeholder_on_unchanged=args.placeholder_on_unchanged,
-            )
-    elif args.command == "patch-all":
-        result = compile_all_patches(
-            model_name=args.model_name,
-            skip_if_unchanged=not args.fail_on_unchanged,
-            setup_missing=not args.no_setup,
-        )
-        if result["failed"] or (args.fail_on_unchanged and result["skipped"]):
-            sys.exit(1)
-    elif args.command == "eval":
-        evaluate_patch(
+        build_patch(
             args.instance_id,
             model_name=args.model_name,
-            run_id=args.run_id,
-            timeout=args.timeout,
-            max_workers=args.max_workers,
-            pull_image=not args.no_pull,
-            ephemeral_image=args.ephemeral_image,
+            placeholder_on_unchanged=args.placeholder_on_unchanged,
         )
     elif args.command == "benchmark":
         benchmark_patch(
@@ -2664,22 +2065,13 @@ def main() -> None:
             reuse_report=args.reuse_report,
         )
     elif args.command == "test":
-        if args.from_benchmark:
-            run_id = args.run_id or f"benchmark-{args.instance_id}"
-            write_test_json(args.instance_id, run_id, args.model_name)
-        else:
-            test_patch(
-                args.instance_id,
-                model_name=args.model_name,
-                run_id=args.run_id,
-                timeout=args.timeout,
-                max_workers=args.max_workers,
-                pull_image=not args.no_pull,
-                ephemeral_image=args.ephemeral_image,
-                reuse_report=args.reuse_report,
+        if not args.from_benchmark:
+            raise SystemExit(
+                "test only supports reading the benchmark harness report.\n"
+                f"Run: ./benchmark {args.instance_id}  then  ./test {args.instance_id}"
             )
-    elif args.command == "run":
-        run_all(args)
+        run_id = args.run_id or f"benchmark-{args.instance_id}"
+        write_test_json(args.instance_id, run_id, args.model_name)
     else:
         parser.print_help()
         sys.exit(1)

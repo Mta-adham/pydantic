@@ -1,14 +1,15 @@
-name: pydantic-4a09447
-instance_id: pydantic__pydantic-4a09447
+name: pydantic-ac9e6ee
+instance_id: pydantic__pydantic-ac9e6ee
 dataset_version: gso-bench/gso@test
 target:
-  image: slimshetty/gso:gso.eval.x86_64.pydantic__pydantic-4a09447
-  digest: sha256:4fda14e0ab2ed60dbb7778e837fb16467b98b40ccfb547e25d2db019d966b18b
+  image: slimshetty/gso:gso.eval.x86_64.pydantic__pydantic-ac9e6ee
+  digest: sha256:24d132d50a8e884fff6a29a5bd17c97befe123f6b7225711495503f77b7e318c
 git:
   repo: pydantic/pydantic
-  base_commit: 4a094477c6a66ba36e36875d09f3d52475991709^
+  base_commit: ac9e6ee3e40845014fc2f9c79d95c5896dc3eca7^
 runner:
-  timeout_seconds: 300
-api: GenericModel.__concrete_name__
+  timeout_seconds: 400
+api: TypeAdapter.validate_python
 files:
-- pydantic/generics.py
+- pydantic/_internal/_std_types_schema.py
+- pydantic/json_schema.py
