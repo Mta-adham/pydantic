@@ -37,6 +37,7 @@ except ValidationError as exc:
 ```
 
 There are various ways to get strict-mode validation while using Pydantic, which will be discussed in more detail below:
+
 * [Passing `strict=True` to the validation methods](#strict-mode-in-method-calls), such as `BaseModel.model_validate`,
   `TypeAdapter.validate_python`, and similar for JSON
 * [Using `Field(strict=True)`](#strict-mode-with-field) with fields of a `BaseModel`, `dataclass`, or `TypedDict`
@@ -477,7 +478,7 @@ except ValidationError as exc:
 ### `TypeAdapter`
 
 You can also get strict mode through the use of the config keyword argument to the
-[`TypeAdapter`](../api/types.md#pydantic.types.TypeAdapter) class:
+[`TypeAdapter`](../api/type_adapter.md) class:
 
 ```python
 from pydantic import ConfigDict, TypeAdapter, ValidationError

@@ -1,12 +1,12 @@
 import contextlib
 import re
-import sys
 from collections import deque
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import Enum
 from functools import partial, partialmethod
 from itertools import product
+from os.path import normcase
 from typing import Any, Callable, Deque, Dict, FrozenSet, List, NamedTuple, Optional, Tuple, Union
 from unittest.mock import MagicMock
 
@@ -64,7 +64,6 @@ def test_annotated_validator_before() -> None:
     assert Model(x='1.0').x == 1.0
 
 
-@pytest.mark.xfail(sys.version_info >= (3, 9) and sys.implementation.name == 'pypy', reason='PyPy 3.9+ bug')
 def test_annotated_validator_builtin() -> None:
     """https://github.com/pydantic/pydantic/issues/6752"""
     TruncatedFloat = Annotated[float, BeforeValidator(int)]
@@ -1093,8 +1092,7 @@ def test_validation_each_item_invalid_type():
 
                 @validator('foobar', each_item=True)
                 @classmethod
-                def check_foobar(cls, v: Any):
-                    ...
+                def check_foobar(cls, v: Any): ...
 
 
 def test_validation_each_item_nullable():
@@ -1544,8 +1542,6 @@ def test_root_validator_returns_none_exception():
 
 
 def test_model_validator_returns_ignore():
-    # This is weird, and I don't understand entirely why it's happening, but it kind of makes sense
-
     class Model(BaseModel):
         a: int = 1
 
@@ -1553,7 +1549,8 @@ def test_model_validator_returns_ignore():
         def model_validator_return_none(self) -> None:
             return None
 
-    m = Model(a=2)
+    with pytest.warns(UserWarning, match='A custom validator is returning a value other than `self`'):
+        m = Model(a=2)
     assert m.model_dump() == {'a': 2}
 
 
@@ -1786,6 +1783,7 @@ def test_overridden_root_validators():
         x: str
 
         @model_validator(mode='before')
+        @classmethod
         def pre_root(cls, values: Dict[str, Any]) -> Dict[str, Any]:
             validate_stub('A', 'pre')
             return values
@@ -1797,6 +1795,7 @@ def test_overridden_root_validators():
 
     class B(A):
         @model_validator(mode='before')
+        @classmethod
         def pre_root(cls, values: Dict[str, Any]) -> Dict[str, Any]:
             validate_stub('B', 'pre')
             return values
@@ -1817,7 +1816,7 @@ def test_overridden_root_validators():
 
 def test_validating_assignment_pre_root_validator_fail():
     class Model(BaseModel):
-        current_value: float = Field(..., alias='current')
+        current_value: float = Field(alias='current')
         max_value: float
 
         model_config = ConfigDict(validate_assignment=True)
@@ -1845,12 +1844,13 @@ def test_validating_assignment_pre_root_validator_fail():
 
 def test_validating_assignment_model_validator_before_fail():
     class Model(BaseModel):
-        current_value: float = Field(..., alias='current')
+        current_value: float = Field(alias='current')
         max_value: float
 
         model_config = ConfigDict(validate_assignment=True)
 
         @model_validator(mode='before')
+        @classmethod
         def values_are_not_string(cls, values: Dict[str, Any]) -> Dict[str, Any]:
             assert isinstance(values, dict)
             if any(isinstance(x, str) for x in values.values()):
@@ -1960,7 +1960,7 @@ def test_v1_validator_deprecated():
     # check that we got stacklevel correct
     # if this fails you need to edit the stacklevel
     # parameter to warnings.warn in _decorators.py
-    assert w.filename == __file__
+    assert normcase(w.filename) == normcase(__file__)
     source = _get_source_line(w.filename, w.lineno)
     assert "@validator('x')" in source
 
@@ -2059,8 +2059,7 @@ def test_v1_validator_signature_kwargs_not_allowed() -> None:
                 a: int
 
                 @validator('a')
-                def check_a(cls, value: Any, foo: Any) -> Any:
-                    ...
+                def check_a(cls, value: Any, foo: Any) -> Any: ...
 
 
 def test_v1_validator_signature_kwargs1() -> None:
@@ -2137,8 +2136,7 @@ def test_v1_validator_signature_with_field() -> None:
                 b: int
 
                 @validator('b')
-                def check_b(cls, value: Any, field: Any) -> Any:
-                    ...
+                def check_b(cls, value: Any, field: Any) -> Any: ...
 
 
 def test_v1_validator_signature_with_config() -> None:
@@ -2150,8 +2148,7 @@ def test_v1_validator_signature_with_config() -> None:
                 b: int
 
                 @validator('b')
-                def check_b(cls, value: Any, config: Any) -> Any:
-                    ...
+                def check_b(cls, value: Any, config: Any) -> Any: ...
 
 
 def test_model_config_validate_default():
@@ -2551,6 +2548,9 @@ def test_validator_allow_reuse_different_field_4():
     assert Model(x=1, y=2).model_dump() == {'x': 2, 'y': 3}
 
 
+@pytest.mark.filterwarnings(
+    'ignore:Pydantic V1 style `@root_validator` validators are deprecated.*:pydantic.warnings.PydanticDeprecatedSince20'
+)
 def test_root_validator_allow_reuse_same_field():
     with pytest.warns(UserWarning, match='`root_val` overrides an existing Pydantic `@root_validator` decorator'):
 
@@ -2869,6 +2869,45 @@ def test_plain_validator_plain_serializer() -> None:
     assert isinstance(data['bar'], ser_type)
 
 
+def test_plain_validator_plain_serializer_single_ser_call() -> None:
+    """https://github.com/pydantic/pydantic/issues/10385"""
+
+    ser_count = 0
+
+    def ser(v):
+        nonlocal ser_count
+        ser_count += 1
+        return v
+
+    class Model(BaseModel):
+        foo: Annotated[bool, PlainSerializer(ser), PlainValidator(lambda v: v)]
+
+    model = Model(foo=True)
+    data = model.model_dump()
+
+    assert data == {'foo': True}
+    assert ser_count == 1
+
+
+@pytest.mark.xfail(reason='https://github.com/pydantic/pydantic/issues/10428')
+def test_plain_validator_with_filter_dict_schema() -> None:
+    class MyDict:
+        @classmethod
+        def __get_pydantic_core_schema__(cls, source, handler):
+            return core_schema.dict_schema(
+                keys_schema=handler.generate_schema(str),
+                values_schema=handler.generate_schema(int),
+                serialization=core_schema.filter_dict_schema(
+                    include={'a'},
+                ),
+            )
+
+    class Model(BaseModel):
+        f: Annotated[MyDict, PlainValidator(lambda v: v)]
+
+    assert Model(f={'a': 1, 'b': 1}).model_dump() == {'f': {'a': 1}}
+
+
 def test_plain_validator_with_unsupported_type() -> None:
     class UnsupportedClass:
         pass
@@ -2883,3 +2922,44 @@ def test_plain_validator_with_unsupported_type() -> None:
     model = type_adapter.validate_python('abcdefg')
     assert isinstance(model, UnsupportedClass)
     assert isinstance(type_adapter.dump_python(model), UnsupportedClass)
+
+
+def test_validator_with_default_values() -> None:
+    def validate_x(v: int, unrelated_arg: int = 1, other_unrelated_arg: int = 2) -> int:
+        assert v != -1
+        return v
+
+    class Model(BaseModel):
+        x: int
+
+        val_x = field_validator('x')(validate_x)
+
+    with pytest.raises(ValidationError):
+        Model(x=-1)
+
+
+def test_field_validator_input_type_invalid_mode() -> None:
+    with pytest.raises(
+        PydanticUserError, match=re.escape("`json_schema_input_type` can't be used when mode is set to 'after'")
+    ):
+
+        class Model(BaseModel):
+            a: int
+
+            @field_validator('a', mode='after', json_schema_input_type=Union[int, str])  # pyright: ignore
+            @classmethod
+            def validate_a(cls, value: Any) -> Any: ...
+
+
+def test_non_self_return_val_warns() -> None:
+    class Child(BaseModel):
+        name: str
+
+        @model_validator(mode='after')  # type: ignore
+        def validate_model(self) -> 'Child':
+            return Child.model_construct(name='different')
+
+    with pytest.warns(UserWarning, match='A custom validator is returning a value other than `self`'):
+        c = Child(name='name')
+        # confirmation of behavior: non-self return value is ignored
+        assert c.name == 'name'

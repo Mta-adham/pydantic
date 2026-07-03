@@ -20,7 +20,10 @@ print(user)
 #> name='John Doe'
 ```
 
-You can also use `default_factory` to define a callable that will be called to generate a default value.
+!!! note
+    If you use the [`Optional`][typing.Optional] annotation, it doesn't mean that the field has a default value of `None`!
+
+You can also use `default_factory` (but not both at the same time) to define a callable that will be called to generate a default value.
 
 ```py
 from uuid import uuid4
@@ -32,11 +35,25 @@ class User(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)
 ```
 
-!!! info
-    The `default` and `default_factory` parameters are mutually exclusive.
+The default factory can also take a single required argument, in which the case the already validated data will be passed as a dictionary.
 
-!!! note
-    If you use `typing.Optional`, it doesn't mean that the field has a default value of `None`!
+```py
+from pydantic import BaseModel, EmailStr, Field
+
+
+class User(BaseModel):
+    email: EmailStr
+    username: str = Field(default_factory=lambda data: data['email'])
+
+
+user = User(email='user@example.com')
+print(user.username)
+#> user@example.com
+```
+
+The `data` argument will *only* contain the already validated data, based on the [order of model fields](./models.md#field-ordering)
+(the above example would fail if `username` were to be defined before `email`).
+
 
 ## Using `Annotated`
 
@@ -65,9 +82,9 @@ For validation and serialization, you can define an alias for a field.
 
 There are three ways to define an alias:
 
-* `Field(..., alias='foo')`
-* `Field(..., validation_alias='foo')`
-* `Field(..., serialization_alias='foo')`
+* `Field(alias='foo')`
+* `Field(validation_alias='foo')`
+* `Field(serialization_alias='foo')`
 
 The `alias` parameter is used for both validation _and_ serialization. If you want to use
 _different_ aliases for validation and serialization respectively, you can use the`validation_alias`
@@ -80,7 +97,7 @@ from pydantic import BaseModel, Field
 
 
 class User(BaseModel):
-    name: str = Field(..., alias='username')
+    name: str = Field(alias='username')
 
 
 user = User(username='johndoe')  # (1)!
@@ -107,7 +124,7 @@ from pydantic import BaseModel, Field
 
 
 class User(BaseModel):
-    name: str = Field(..., validation_alias='username')
+    name: str = Field(validation_alias='username')
 
 
 user = User(username='johndoe')  # (1)!
@@ -127,7 +144,7 @@ from pydantic import BaseModel, Field
 
 
 class User(BaseModel):
-    name: str = Field(..., serialization_alias='username')
+    name: str = Field(serialization_alias='username')
 
 
 user = User(name='johndoe')  # (1)!
@@ -145,10 +162,8 @@ print(user.model_dump(by_alias=True))  # (2)!
     the `validation_alias` will have priority over `alias` for validation, and `serialization_alias` will have priority
     over `alias` for serialization.
 
-    You may also set `alias_priority` on a field to change this behavior.
-
-    You can read more about [Alias Precedence](../concepts/alias.md#alias-precedence) in the
-    [Model Config][pydantic.config.ConfigDict] documentation.
+    If you use an `alias_generator` in the [Model Config][pydantic.config.ConfigDict.alias_generator], you can control
+    the order of precedence for specified field vs generated aliases via the `alias_priority` setting. You can read more about alias precedence [here](../concepts/alias.md#alias-precedence).
 
 
 ??? tip "VSCode and Pyright users"
@@ -160,7 +175,7 @@ print(user.model_dump(by_alias=True))  # (2)!
 
 
     class User(BaseModel):
-        name: str = Field(..., alias='username')
+        name: str = Field(alias='username')
 
 
     user = User(username='johndoe')  # (1)!
@@ -179,7 +194,7 @@ print(user.model_dump(by_alias=True))  # (2)!
     class User(BaseModel):
         model_config = ConfigDict(populate_by_name=True)
 
-        name: str = Field(..., alias='username')
+        name: str = Field(alias='username')
 
 
     user = User(name='johndoe')  # (1)!
@@ -197,7 +212,7 @@ print(user.model_dump(by_alias=True))  # (2)!
     class User(BaseModel):
         model_config = ConfigDict(populate_by_name=True)
 
-        name: str = Field(..., alias=str('username'))  # noqa: UP018
+        name: str = Field(alias=str('username'))  # noqa: UP018
 
 
     user = User(name='johndoe')  # (1)!
@@ -221,7 +236,7 @@ print(user.model_dump(by_alias=True))  # (2)!
 
 
     class MyModel(BaseModel):
-        my_field: int = Field(..., validation_alias='myValidationAlias')
+        my_field: int = Field(validation_alias='myValidationAlias')
     ```
     with:
     ```py
@@ -542,7 +557,7 @@ approach can be useful when the discriminator fields aren't the same for all the
 
 The following example shows how to use `discriminator` with a field name:
 
-```py requires="3.8"
+```py
 from typing import Literal, Union
 
 from pydantic import BaseModel, Field
@@ -566,11 +581,11 @@ print(Model.model_validate({'pet': {'pet_type': 'cat', 'age': 12}}))  # (1)!
 #> pet=Cat(pet_type='cat', age=12)
 ```
 
-1. See more about [Helper Functions] in the [Models] page.
+1. See more about [Validating data] in the [Models] page.
 
 The following example shows how to use the `discriminator` keyword argument with a `Discriminator` instance:
 
-```py requires="3.8"
+```py
 from typing import Literal, Union
 
 from typing_extensions import Annotated
@@ -723,17 +738,27 @@ print(Model.model_json_schema()['properties']['deprecated_field'])
 
 ### `deprecated` via the `warnings.deprecated` decorator
 
+!!! note
+    You can only use the `deprecated` decorator in this way if you have
+    `typing_extensions` >= 4.9.0 installed.
+
 ```py test="skip"
+import importlib.metadata
+
+from packaging.version import Version
 from typing_extensions import Annotated, deprecated
 
 from pydantic import BaseModel, Field
 
+if Version(importlib.metadata.version('typing_extensions')) >= Version('4.9'):
 
-class Model(BaseModel):
-    deprecated_field: Annotated[int, deprecated('This is deprecated')]
+    class Model(BaseModel):
+        deprecated_field: Annotated[int, deprecated('This is deprecated')]
 
-    # Or explicitly using `Field`:
-    alt_form: Annotated[int, Field(deprecated=deprecated('This is deprecated'))]
+        # Or explicitly using `Field`:
+        alt_form: Annotated[
+            int, Field(deprecated=deprecated('This is deprecated'))
+        ]
 ```
 
 ### `deprecated` as a boolean
@@ -793,13 +818,20 @@ Read more about JSON schema customization / modification with fields in the [Cus
 ## The `computed_field` decorator
 
 ??? api "API Documentation"
-    [`pydantic.fields.computed_field`][pydantic.fields.computed_field]<br>
+    [`computed_field`][pydantic.fields.computed_field]<br>
 
-The `computed_field` decorator can be used to include `property` or `cached_property` attributes when serializing a
-model or dataclass. This can be useful for fields that are computed from other fields, or for fields that
-are expensive to computed (and thus, are cached).
+The [`computed_field`][pydantic.fields.computed_field] decorator can be used to include [`property`][] or
+[`cached_property`][functools.cached_property] attributes when serializing a model or dataclass.
+The property will also be taken into account in the JSON Schema (in serialization mode).
 
-Here's an example:
+!!! note
+    Properties can be useful for fields that are computed from other fields, or for fields that
+    are expensive to be computed (and thus, are cached if using [`cached_property`][functools.cached_property]).
+
+    However, note that Pydantic will *not* perform any additional logic on the wrapped property
+    (validation, cache invalidation, etc.).
+
+Here's an example of the JSON schema (in serialization mode) generated for a model with a computed field:
 
 ```py
 from pydantic import BaseModel, computed_field
@@ -811,6 +843,40 @@ class Box(BaseModel):
     depth: float
 
     @computed_field
+    @property  # (1)!
+    def volume(self) -> float:
+        return self.width * self.height * self.depth
+
+
+print(Box.model_json_schema(mode='serialization'))
+"""
+{
+    'properties': {
+        'width': {'title': 'Width', 'type': 'number'},
+        'height': {'title': 'Height', 'type': 'number'},
+        'depth': {'title': 'Depth', 'type': 'number'},
+        'volume': {'readOnly': True, 'title': 'Volume', 'type': 'number'},
+    },
+    'required': ['width', 'height', 'depth', 'volume'],
+    'title': 'Box',
+    'type': 'object',
+}
+"""
+```
+
+Here's an example using the `model_dump` method with a computed field:
+
+```py
+from pydantic import BaseModel, computed_field
+
+
+class Box(BaseModel):
+    width: float
+    height: float
+    depth: float
+
+    @computed_field
+    @property  # (1)!
     def volume(self) -> float:
         return self.width * self.height * self.depth
 
@@ -819,6 +885,10 @@ b = Box(width=1, height=2, depth=3)
 print(b.model_dump())
 #> {'width': 1.0, 'height': 2.0, 'depth': 3.0, 'volume': 6.0}
 ```
+
+1. If not specified, [`computed_field`][pydantic.fields.computed_field] will implicitly convert the method
+   to a [`property`][]. However, it is preferable to explicitly use the [`@property`][property] decorator
+   for type checking purposes.
 
 As with regular fields, computed fields can be marked as being deprecated:
 
@@ -834,6 +904,7 @@ class Box(BaseModel):
     depth: float
 
     @computed_field
+    @property
     @deprecated("'volume' is deprecated")
     def volume(self) -> float:
         return self.width * self.height * self.depth
@@ -842,7 +913,7 @@ class Box(BaseModel):
 
 [JSON Schema Draft 2020-12]: https://json-schema.org/understanding-json-schema/reference/numeric.html#numeric-types
 [Discriminated Unions]: ../concepts/unions.md#discriminated-unions
-[Helper Functions]: models.md#helper-functions
+[Validating data]: models.md#validating-data
 [Models]: models.md
 [init-only field]: https://docs.python.org/3/library/dataclasses.html#init-only-variables
 [frozen dataclass documentation]: https://docs.python.org/3/library/dataclasses.html#frozen-instances

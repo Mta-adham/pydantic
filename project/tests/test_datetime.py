@@ -87,7 +87,7 @@ def date_model_fixture():
         (float('inf'), Err('Input should be a valid date or datetime, dates after 9999')),
         (int('1' + '0' * 100), Err('Input should be a valid date or datetime, dates after 9999')),
         (1e1000, Err('Input should be a valid date or datetime, dates after 9999')),
-        (float('-infinity'), Err('Input should be a valid date or datetime, dates before 1600')),
+        (float('-infinity'), Err('Input should be a valid date or datetime, dates before 0000')),
         (float('nan'), Err('Input should be a valid date or datetime, NaN values not permitted')),
     ],
 )
@@ -174,8 +174,8 @@ def datetime_model_fixture():
         ('1494012444.883309', datetime(2017, 5, 5, 19, 27, 24, 883309, tzinfo=timezone.utc)),
         ('1494012444', datetime(2017, 5, 5, 19, 27, 24, tzinfo=timezone.utc)),
         (b'1494012444', datetime(2017, 5, 5, 19, 27, 24, tzinfo=timezone.utc)),
-        ('1494012444000.883309', datetime(2017, 5, 5, 19, 27, 24, 883301, tzinfo=timezone.utc)),
-        ('-1494012444000.883309', datetime(1922, 8, 29, 4, 32, 35, 999000, tzinfo=timezone.utc)),
+        ('1494012444000.883309', datetime(2017, 5, 5, 19, 27, 24, 883, tzinfo=timezone.utc)),
+        ('-1494012444000.883309', datetime(1922, 8, 29, 4, 32, 35, 999117, tzinfo=timezone.utc)),
         (19_999_999_999, datetime(2603, 10, 11, 11, 33, 19, tzinfo=timezone.utc)),  # just before watershed
         (20_000_000_001, datetime(1970, 8, 20, 11, 33, 20, 1000, tzinfo=timezone.utc)),  # just after watershed
         (1_549_316_052, datetime(2019, 2, 4, 21, 34, 12, 0, tzinfo=timezone.utc)),  # nowish in s
@@ -184,7 +184,7 @@ def datetime_model_fixture():
         (1_549_316_052_104_324, Err('Input should be a valid datetime, dates after 9999')),  # nowish in μs
         (1_549_316_052_104_324_096, Err('Input should be a valid datetime, dates after 9999')),  # nowish in ns
         (float('inf'), Err('Input should be a valid datetime, dates after 9999')),
-        (float('-inf'), Err('Input should be a valid datetime, dates before 1600')),
+        (float('-inf'), Err('Input should be a valid datetime, dates before 0000')),
         (1e50, Err('Input should be a valid datetime, dates after 9999')),
         (float('nan'), Err('Input should be a valid datetime, NaN values not permitted')),
     ],

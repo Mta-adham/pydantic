@@ -1,8 +1,9 @@
 We'd love you to contribute to Pydantic!
+
 ## Issues
 
-Questions, feature requests and bug reports are all welcome as [discussions or issues](https://github.com/pydantic/pydantic/issues/new/choose). **However, to report a security
-vulnerability, please see our [security policy](https://github.com/pydantic/pydantic/security/policy).**
+Questions, feature requests and bug reports are all welcome as [discussions or issues](https://github.com/pydantic/pydantic/issues/new/choose).
+**However, to report a security vulnerability, please see our [security policy](https://github.com/pydantic/pydantic/security/policy).**
 
 To make it as simple as possible for us to help you, please include the output of the following call in your issue:
 
@@ -13,8 +14,6 @@ If you're using Pydantic prior to **v2.0** please use:
 ```bash
 python -c "import pydantic.utils; print(pydantic.utils.version_info())"
 ```
-If you're using Pydantic prior to **v1.3** (when `version_info()` was added), please manually include OS, Python
-version and pydantic version.
 
 Please try to always include the above unless you're unable to install Pydantic or **know** it's not relevant
 to your question or feature request.
@@ -31,7 +30,7 @@ creating a pull request.
     Pydantic v1 is in maintenance mode, meaning that only bug fixes and security fixes will be accepted.
     New features should be targeted at Pydantic v2.
 
-    To submit a fix to Pydantic v1, use the `1.10.X-fixes` branch.
+    To submit a fix to Pydantic v1, use the `1.10.X-fixes` as a target branch.
 
 If you're looking for something to get your teeth into, check out the
 ["help wanted"](https://github.com/pydantic/pydantic/issues?q=is%3Aopen+is%3Aissue+label%3A%22help+wanted%22)
@@ -42,18 +41,17 @@ Pydantic has few dependencies, doesn't require compiling and tests don't need ac
 Because of this, setting up and running the tests should be very simple.
 
 !!! tip
-    **tl;dr**: use `make format` to fix formatting, `make` to run tests and linting & `make docs`
+    **tl;dr**: use `make format` to fix formatting, `make` to run tests and linting and `make docs`
     to build the docs.
 
 ### Prerequisites
 
 You'll need the following prerequisites:
 
-- Any Python version between **Python 3.8 and 3.11**
-- **virtualenv** or other virtual environment tool
+- Any Python version between **Python 3.9 and 3.12**
+- [**uv**](https://docs.astral.sh/uv/getting-started/installation/) or other virtual environment tool
 - **git**
 - **make**
-- [**PDM**](https://pdm.fming.dev/latest/#installation)
 
 ### Installation and setup
 
@@ -64,13 +62,13 @@ Fork the repository on GitHub and clone your fork locally.
 git clone git@github.com:<your username>/pydantic.git
 cd pydantic
 
-# Install PDM and pre-commit
+# Install UV and pre-commit
 # We use pipx here, for other options see:
-# https://pdm.fming.dev/latest/#installation
+# https://docs.astral.sh/uv/getting-started/installation/
 # https://pre-commit.com/#install
 # To get pipx itself:
 # https://pypa.github.io/pipx/
-pipx install pdm
+pipx install uv
 pipx install pre-commit
 
 # Install pydantic, dependencies, test dependencies and doc dependencies
@@ -108,12 +106,34 @@ make
 
 If you've made any changes to the documentation (including changes to function signatures, class definitions, or docstrings that will appear in the API documentation), make sure it builds successfully.
 
+We use `mkdocs-material[imaging]` to support social previews.
+You can find directions on how to install the required dependencies [here](https://squidfunk.github.io/mkdocs-material/plugins/requirements/image-processing/).
+
 ```bash
 # Build documentation
 make docs
 # If you have changed the documentation, make sure it builds successfully.
-# You can also use `pdm run mkdocs serve` to serve the documentation at localhost:8000
+# You can also use `uv run mkdocs serve` to serve the documentation at localhost:8000
 ```
+
+If this isn't working due to issues with the imaging plugin, try commenting out the `social` plugin line in `mkdocs.yml` and running `make docs` again.
+
+#### Updating the documentation
+
+We push a new version of the documentation with each minor release, and we push to a `dev` path with each commit to `main`.
+
+If you're updating the documentation out of cycle with a minor release and want your changes to be reflected on `latest`,
+do the following:
+
+1. Open a PR against `main` with your docs changes
+2. Once the PR is merged, checkout the `docs-update` branch. This branch should be up to date with the latest patch release.
+For example, if the latest release is `v2.9.2`, you should make sure `docs-update` is up to date with the `v2.9.2` tag.
+3. Checkout a new branch from `docs-update` and cherry-pick your changes onto this branch.
+4. Push your changes and open a PR against `docs-update`.
+5. Once the PR is merged, the new docs will be built and deployed.
+
+!!! note
+    Maintainer shortcut - as a maintainer, you can skip the second PR and just cherry pick directly onto the `docs-update` branch.
 
 ### Commit and push your changes
 
@@ -123,9 +143,6 @@ Please follow the pull request template and fill in as much information as possi
 
 When your pull request is ready for review, add a comment with the message "please review" and we'll take a look as soon as we can.
 
-## Code style and requirements
-
-TODO
 
 ## Documentation style
 
@@ -173,7 +190,7 @@ def bar(self, baz: int) -> str:
     return 'bar'
 ```
 
-You may include example code in docstrings. This code should be complete, self-contained, and runnable. Docstring examples are tested using [doctest](https://docs.python.org/3/library/doctest.html), so make sure they are correct and complete. See [FieldInfo.from_annotated_attribute()][pydantic.fields.FieldInfo.from_annotated_attribute] for an example.
+You may include example code in docstrings. This code should be complete, self-contained, and runnable. Docstring examples are tested, so make sure they are correct and complete. See [`FieldInfo.from_annotated_attribute`][pydantic.fields.FieldInfo.from_annotated_attribute] for an example.
 
 !!! note "Class and instance attributes"
     Class attributes should be documented in the class docstring.
@@ -192,6 +209,16 @@ Pydantic's unit test will test all code examples in the documentation, so it's i
 # Run tests and update code examples
 pytest tests/test_docs.py --update-examples
 ```
+
+## Debugging Python and Rust
+
+If you're working with `pydantic` and `pydantic-core`, you might find it helpful to debug Python and Rust code together.
+Here's a quick guide on how to do that. This tutorial is done in VSCode, but you can use similar steps in other IDEs.
+
+<div style="position: relative; padding-bottom: 56.4035546262415%; height: 0;">
+    <iframe src="https://www.loom.com/embed/71019f8b92b04839ae233eb70c23c5b5?sid=1ea39ca9-d0cc-494b-8214-159f7cc26190" frameborder="0" webkitallowfullscreen mozallowfullscreen allowfullscreen style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;">
+    </iframe>
+</div>
 
 ## Badges
 

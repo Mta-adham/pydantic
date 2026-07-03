@@ -182,7 +182,7 @@ def test_construct():
         pass
 
     v = Base64Root.model_construct('test')
-    assert v.model_dump() == 'dGVzdA==\n'
+    assert v.model_dump() == 'dGVzdA=='
 
 
 def test_construct_nested():
@@ -190,7 +190,7 @@ def test_construct_nested():
         data: RootModel[Base64Str]
 
     v = Base64RootProperty.model_construct(data=RootModel[Base64Str].model_construct('test'))
-    assert v.model_dump() == {'data': 'dGVzdA==\n'}
+    assert v.model_dump() == {'data': 'dGVzdA=='}
 
     # Note: model_construct requires the inputs to be valid; the root model value does not get "validated" into
     # an actual root model instance:
@@ -213,6 +213,7 @@ def test_assignment():
 def test_model_validator_before():
     class Model(RootModel[int]):
         @model_validator(mode='before')
+        @classmethod
         def words(cls, v):
             if v == 'one':
                 return 1
@@ -510,8 +511,13 @@ def test_mixed_discriminated_union(data):
     class Model(RootModel):
         root: Union[SModel, RModel] = Field(discriminator='kind')
 
-    assert Model(data).model_dump() == data
-    assert Model(**data).model_dump() == data
+    if data['kind'] == 'IModel':
+        with pytest.warns(UserWarning, match='Failed to get discriminator value for tagged union serialization'):
+            assert Model(data).model_dump() == data
+            assert Model(**data).model_dump() == data
+    else:
+        assert Model(data).model_dump() == data
+        assert Model(**data).model_dump() == data
 
 
 def test_list_rootmodel():
@@ -657,3 +663,25 @@ def test_model_construction_with_invalid_generic_specification() -> None:
 
         class GenericRootModel(RootModel, Generic[T_]):
             root: Union[T_, int]
+
+
+def test_model_with_field_description() -> None:
+    class AModel(RootModel):
+        root: int = Field(description='abc')
+
+    assert AModel.model_json_schema() == {'title': 'AModel', 'type': 'integer', 'description': 'abc'}
+
+
+def test_model_with_both_docstring_and_field_description() -> None:
+    """Check if the docstring is used as the description when both are present."""
+
+    class AModel(RootModel):
+        """More detailed description"""
+
+        root: int = Field(description='abc')
+
+    assert AModel.model_json_schema() == {
+        'title': 'AModel',
+        'type': 'integer',
+        'description': 'More detailed description',
+    }

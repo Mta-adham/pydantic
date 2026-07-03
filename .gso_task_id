@@ -1,15 +1,16 @@
-name: pydantic-ac9e6ee
-instance_id: pydantic__pydantic-ac9e6ee
+name: pydantic-c2647ab
+instance_id: pydantic__pydantic-c2647ab
 dataset_version: gso-bench/gso@test
 target:
-  image: slimshetty/gso:gso.eval.x86_64.pydantic__pydantic-ac9e6ee
-  digest: sha256:24d132d50a8e884fff6a29a5bd17c97befe123f6b7225711495503f77b7e318c
+  image: slimshetty/gso:gso.eval.x86_64.pydantic__pydantic-c2647ab
+  digest: sha256:dffdd7a0f11333e2a63d1725d71c65df201077e730b12bb9242c8a33381060b3
 git:
   repo: pydantic/pydantic
-  base_commit: ac9e6ee3e40845014fc2f9c79d95c5896dc3eca7^
+  base_commit: c2647ab2c1555d62901bd44fdd57669fe3b9aec6^
 runner:
-  timeout_seconds: 400
-api: TypeAdapter.validate_python
+  timeout_seconds: 300
+api: TypeAdapter.validate_strings
 files:
-- pydantic/_internal/_std_types_schema.py
-- pydantic/json_schema.py
+- pydantic/type_adapter.py
+- pydantic/_internal/_mock_val_ser.py
+- pydantic/_internal/_namespace_utils.py

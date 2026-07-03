@@ -155,7 +155,7 @@ class Context(TypedDict):
     logs: List[str]
 
 
-def make_validator(label: str) -> Callable[[str, ValidationInfo], str]:
+def make_validator(label: str) -> Callable[[Any, ValidationInfo], Any]:
     def validator(v: Any, info: ValidationInfo) -> Any:
         context = cast(Context, info.context)
         context['logs'].append(label)
@@ -166,7 +166,7 @@ def make_validator(label: str) -> Callable[[str, ValidationInfo], str]:
 
 def make_wrap_validator(
     label: str,
-) -> Callable[[str, ValidatorFunctionWrapHandler, ValidationInfo], str]:
+) -> Callable[[Any, ValidatorFunctionWrapHandler, ValidationInfo], Any]:
     def validator(
         v: Any, handler: ValidatorFunctionWrapHandler, info: ValidationInfo
     ) -> Any:
@@ -459,8 +459,49 @@ except ValidationError as e:
     Methods decorated with `@model_validator` should return the self instance at the end of the method.
     For type checking purposes, you can use `Self` from either `typing` or the `typing_extensions` backport as the
     return type of the decorated method.
-    In the context of the above example, you could also use `def check_passwords_match(self: 'UserModel)' -> 'UserModel'` to indicate that
-    the method returns an instance of the model.
+    In the context of the above example, you could also use `def check_passwords_match(self: 'UserModel') -> 'UserModel'` to indicate that the method returns an instance of the model.
+
+!!! warning "On not returning `self`"
+    If you fail to return `self` at the end of a `@model_validator` method (either, returning `None` or returning something other than `self`),
+    you may encounter unexpected behavior.
+
+    Specifically, for nested models, if you return `None` (or equivalently, don't include a `return` statement),
+    despite a potentially successful validation, the nested model will be `None` in the parent model.
+
+    Returning a value other than `self` causes unexpected behavior at the top level of validation when validating via `__init__`.
+    In order to avoid this, we recommend one of:
+    1. Simply mutate and return `self` at the end of the method.
+    2. If you must return a value other than `self`, use a method like `model_validate` where you can directly fetch the return value.
+
+    Here's an example of the unexpected behavior, and the warning you'll receive:
+
+    ```python test="skip"
+    from pydantic import BaseModel
+    from pydantic.functional_validators import model_validator
+
+
+    class Child(BaseModel):
+        name: str
+
+        @model_validator(mode='after')  # type: ignore
+        def validate_model(self) -> 'Child':
+            return Child.model_construct(name='different!')
+
+
+    print(repr(Child(name='foo')))
+    """
+    UserWarning: A custom validator is returning a value other than `self`.
+    Returning anything other than `self` from a top level model validator isn't supported when validating via `__init__`.
+    See the `model_validator` docs (https://docs.pydantic.dev/latest/concepts/validators/#model-validators) for more details.
+
+    Child(name='foo')
+    """
+    ```
+
+!!! note "On Inheritance"
+    A `@model_validator` defined in a base class will be called during the validation of a subclass instance.
+
+    Overriding a `@model_validator` in a subclass will override the base class' `@model_validator`, and thus only the subclass' version of said `@model_validator` will be called.
 
 Model validators can be `mode='before'`, `mode='after'` or `mode='wrap'`.
 
@@ -529,12 +570,10 @@ class Fruit:
         return self.__class__.__name__
 
 
-class Banana(Fruit):
-    ...
+class Banana(Fruit): ...
 
 
-class Apple(Fruit):
-    ...
+class Apple(Fruit): ...
 
 
 class Basket(BaseModel):
@@ -586,33 +625,6 @@ on subclasses of the model where the validator is defined.
 
 If you want to disable these checks during class creation, you can pass `check_fields=False` as a keyword argument to
 the validator.
-
-## Dataclass validators
-
-Validators also work with Pydantic dataclasses.
-
-```py
-from pydantic import field_validator
-from pydantic.dataclasses import dataclass
-
-
-@dataclass
-class DemoDataclass:
-    product_id: str  # should be a five-digit string, may have leading zeros
-
-    @field_validator('product_id', mode='before')
-    @classmethod
-    def convert_int_serial(cls, v):
-        if isinstance(v, int):
-            v = str(v).zfill(5)
-        return v
-
-
-print(DemoDataclass(product_id='01234'))
-#> DemoDataclass(product_id='01234')
-print(DemoDataclass(product_id=2468))
-#> DemoDataclass(product_id='02468')
-```
 
 ## Validation Context
 
@@ -708,6 +720,8 @@ except ValidationError as exc:
       Value error, choice must be one of ['b', 'c'] [type=value_error, input_value='a', input_type=str]
     """
 ```
+
+Similarly, you can [use a context for serialization](../concepts/serialization.md#serialization-context).
 
 ### Using validation context with `BaseModel` initialization
 Although there is no way to specify a context in the standard `BaseModel` initializer, you can work around this through

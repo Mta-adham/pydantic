@@ -7,6 +7,13 @@ theme:
   name: 'material'
   custom_dir: 'docs/theme'
   palette:
+  - media: "(prefers-color-scheme)"
+    scheme: default
+    primary: pink
+    accent: pink
+    toggle:
+      icon: material/lightbulb
+      name: "Switch to light mode"
   - media: "(prefers-color-scheme: light)"
     scheme: default
     primary: pink
@@ -19,14 +26,24 @@ theme:
     primary: pink
     accent: pink
     toggle:
-      icon: material/lightbulb
-      name: "Switch to light mode"
+      icon: material/lightbulb-auto-outline
+      name: "Switch to system preference"
   features:
     - content.tabs.link
     - content.code.annotate
     - content.code.copy
     - announce.dismiss
     - navigation.tabs
+    - navigation.instant
+    - navigation.instant.prefetch
+    - navigation.instant.preview
+    - navigation.instant.progress
+    - navigation.path
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - search.suggest
+    - toc.follow
   logo: 'logo-white.svg'
   favicon: 'favicon.png'
 
@@ -36,6 +53,20 @@ edit_uri: edit/main/docs/
 extra:
   version:
     provider: mike
+  analytics:
+    feedback:
+      title: Was this page helpful?
+      ratings:
+        - icon: material/thumb-up-outline
+          name: This page was helpful
+          data: 1
+          note: >-
+            Thanks for your feedback!
+        - icon: material/thumb-down-outline
+          name: This page could be improved
+          data: 0
+          note: >-
+            Thanks for your feedback!
 
 # https://www.mkdocs.org/user-guide/configuration/#validation
 validation:
@@ -47,6 +78,7 @@ extra_css:
   - 'extra/terminal.css'
   - 'extra/tweaks.css'
 extra_javascript:
+  - 'extra/feedback.js'
   - 'extra/fluff.js'
   - 'https://samuelcolvin.github.io/mkdocs-run-code/run_code_main.js'
 
@@ -72,14 +104,14 @@ nav:
   - Serialization: concepts/serialization.md
   - Validators: concepts/validators.md
   - Dataclasses: concepts/dataclasses.md
-  - Postponed Annotations: concepts/postponed_annotations.md
+  - Forward Annotations: concepts/forward_annotations.md
   - Strict Mode: concepts/strict_mode.md
   - Type Adapter: concepts/type_adapter.md
   - Validation Decorator: concepts/validation_decorator.md
   - Conversion Table: concepts/conversion_table.md
   - Settings Management: concepts/pydantic_settings.md
   - Performance: concepts/performance.md
-  - Pydantic Plugins: concepts/plugins.md
+  - Experimental: concepts/experimental.md
 - API Documentation:
   - Pydantic:
     - BaseModel: api/base_model.md
@@ -98,8 +130,8 @@ nav:
     - Pydantic Types: api/types.md
     - Network Types: api/networks.md
     - Version Information: api/version.md
-    - Pydantic Plugins: api/plugin.md
     - Annotated Handlers: api/annotated_handlers.md
+    - Experimental: api/experimental.md
   - Pydantic Core:
     - pydantic_core: api/pydantic_core.md
     - pydantic_core.core_schema: api/pydantic_core_schema.md
@@ -116,21 +148,36 @@ nav:
     - Pendulum: api/pydantic_extra_types_pendulum_dt.md
     - Currency: api/pydantic_extra_types_currency_code.md
     - Language: api/pydantic_extra_types_language_code.md
+    - Script Code: api/pydantic_extra_types_script_code.md
+    - Semantic Version: api/pydantic_extra_types_semantic_version.md
+    - Timezone Name: api/pydantic_extra_types_timezone_name.md
+    - ULID: api/pydantic_extra_types_ulid.md
+- Internals:
+  - Architecture: internals/architecture.md
+  - Resolving Annotations: internals/resolving_annotations.md
 - Examples:
-  - Secrets: examples/secrets.md
+  - Validating File Data: examples/files.md
+  - Web and API Requests: examples/requests.md
+  - Queues: examples/queues.md
+  - Databases: examples/orms.md
+  - Custom Validators: examples/custom_validators.md
 - Error Messages:
   - Error Handling: errors/errors.md
   - Validation Errors: errors/validation_errors.md
   - Usage Errors: errors/usage_errors.md
 - Integrations:
-  - Mypy: integrations/mypy.md/.
-  - PyCharm: integrations/pycharm.md
-  - Hypothesis: integrations/hypothesis.md
-  - Visual Studio Code: integrations/visual_studio_code.md
-  - datamodel-code-generator: integrations/datamodel_code_generator.md
-  - devtools: integrations/devtools.md
-  - Rich: integrations/rich.md
-  - Linting: integrations/linting.md
+  - Pydantic Logfire: integrations/logfire.md
+  - Dev Tools:
+    - Mypy: integrations/mypy.md/.
+    - PyCharm: integrations/pycharm.md
+    - Hypothesis: integrations/hypothesis.md
+    - Visual Studio Code: integrations/visual_studio_code.md
+    - datamodel-code-generator: integrations/datamodel_code_generator.md
+    - devtools: integrations/devtools.md
+    - Rich: integrations/rich.md
+    - Linting: integrations/linting.md
+  - Production Tools:
+    - AWS Lambda: integrations/aws_lambda.md
 - Blog: https://blog.pydantic.dev/
 - Pydantic People: pydantic_people.md
 
@@ -154,7 +201,11 @@ markdown_extensions:
 watch:
 - pydantic
 
+hooks:
+- 'docs/plugins/main.py'
+
 plugins:
+- social
 - mike:
     alias_type: symlink
     canonical_version: latest
@@ -180,12 +231,8 @@ plugins:
           extensions:
             - docs/plugins/griffe_doclinks.py
         import:
-          - https://docs.python.org/3/objects.inv
-- mkdocs-simple-hooks:
-    hooks:
-      on_pre_build: 'docs.plugins.main:on_pre_build'
-      on_files: 'docs.plugins.main:on_files'
-      on_page_markdown: 'docs.plugins.main:on_page_markdown'
+          - url: https://docs.python.org/3/objects.inv
+            domains: [py, std]
 - redirects:
     redirect_maps:
       'usage/mypy.md': 'integrations/mypy.md'
@@ -199,7 +246,7 @@ plugins:
       'usage/rich.md': 'integrations/rich.md'
       'usage/linting.md': 'integrations/linting.md'
       'usage/types.md': 'concepts/types.md'
-      'usage/types/secrets.md': 'examples/secrets.md'
+      'usage/types/secrets.md': 'api/types.md#pydantic.types.Secret'
       'usage/types/string_types.md': 'api/types.md#pydantic.types.StringConstraints'
       'usage/types/file_types.md': 'api/types.md#pydantic.types.FilePath'
       'api/main.md': 'api/base_model.md'
@@ -237,7 +284,8 @@ plugins:
       'usage/fields.md': 'concepts/fields.md'
       'usage/json_schema.md': 'concepts/json_schema.md'
       'usage/models.md': 'concepts/models.md'
-      'usage/postponed_annotations.md': 'concepts/postponed_annotations.md'
+      'usage/postponed_annotations.md': 'concepts/forward_annotations.md'
+      'concepts/postponed_annotations.md': 'concepts/forward_annotations.md'
       'usage/pydantic_settings.md': 'concepts/pydantic_settings.md'
       'usage/serialization.md': 'concepts/serialization.md'
       'usage/strict_mode.md': 'concepts/strict_mode.md'
@@ -252,7 +300,9 @@ plugins:
       'usage/types/sequence_iterable.md': 'api/standard_library_types.md#other-iterables'
       'usage/types/set_types.md': 'api/standard_library_types.md#sets'
       'usage/types/uuids.md': 'api/standard_library_types.md#uuid'
-      'blog/pydantic-v2-alpha.md': 'https://blog.pydantic.dev/blog/2023/04/03/pydantic-v2-pre-release/'
-      'blog/pydantic-v2-final.md': 'https://blog.pydantic.dev/blog/2023/06/30/pydantic-v2-is-here/'
-      'blog/pydantic-v2.md': 'https://blog.pydantic.dev/blog/2022/07/10/pydantic-v2-plan/'
-- external-markdown:
+      'blog/pydantic-v2-alpha.md': 'https://pydantic.dev/articles/pydantic-v2-alpha'
+      'blog/pydantic-v2-final.md': 'https://pydantic.dev/articles/pydantic-v2-final'
+      'blog/pydantic-v2.md': 'https://pydantic.dev/articles/pydantic-v2'
+      'examples/secrets.md': 'api/types.md#pydantic.types.Secret'
+      'examples/validators.md': 'examples/custom_validators.md'
+      'architecture.md': 'internals/architecture.md'

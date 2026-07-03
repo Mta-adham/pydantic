@@ -4,7 +4,7 @@ import sys
 from contextlib import nullcontext as does_not_raise
 from decimal import Decimal
 from inspect import signature
-from typing import Any, ContextManager, Iterable, NamedTuple, Optional, Type, Union
+from typing import Any, ContextManager, Dict, Iterable, NamedTuple, Optional, Type, Union
 
 from dirty_equals import HasRepr, IsPartialDict
 from pydantic_core import SchemaError, SchemaSerializer, SchemaValidator
@@ -13,7 +13,6 @@ from pydantic import (
     BaseConfig,
     BaseModel,
     Field,
-    GenerateSchema,
     PrivateAttr,
     PydanticDeprecatedSince20,
     PydanticSchemaGenerationError,
@@ -21,16 +20,21 @@ from pydantic import (
     create_model,
     field_validator,
     validate_call,
+    with_config,
 )
 from pydantic._internal._config import ConfigWrapper, config_defaults
+from pydantic._internal._generate_schema import GenerateSchema
 from pydantic._internal._mock_val_ser import MockValSer
 from pydantic._internal._typing_extra import get_type_hints
 from pydantic.config import ConfigDict, JsonValue
 from pydantic.dataclasses import dataclass as pydantic_dataclass
+from pydantic.dataclasses import rebuild_dataclass
 from pydantic.errors import PydanticUserError
-from pydantic.fields import FieldInfo
+from pydantic.fields import ComputedFieldInfo, FieldInfo
 from pydantic.type_adapter import TypeAdapter
-from pydantic.warnings import PydanticDeprecationWarning
+from pydantic.warnings import PydanticDeprecatedSince210, PydanticDeprecationWarning
+
+from .conftest import CallCounter
 
 if sys.version_info < (3, 9):
     from typing_extensions import Annotated
@@ -97,11 +101,9 @@ class TestsBaseConfig:
             frozen = True
 
         class MyBaseModel(BaseModel):
-            class Config(MyConfig):
-                ...
+            class Config(MyConfig): ...
 
-        class MyModel(MyBaseModel):
-            ...
+        class MyModel(MyBaseModel): ...
 
         MyModel.model_config['title'] = 'MyTitle'
         MyModel.model_config['frozen'] = True
@@ -111,7 +113,7 @@ class TestsBaseConfig:
         class MyModel(BaseModel):
             id: int
             name: str = 'John Doe'
-            f__: str = Field(..., alias='foo')
+            f__: str = Field(alias='foo')
 
             model_config = ConfigDict(extra='allow')
 
@@ -142,7 +144,7 @@ class TestsBaseConfig:
 
     def test_base_config_use_field_name(self):
         class Foo(BaseModel):
-            foo: str = Field(..., alias='this is invalid')
+            foo: str = Field(alias='this is invalid')
 
             model_config = ConfigDict(populate_by_name=True)
 
@@ -150,7 +152,7 @@ class TestsBaseConfig:
 
     def test_base_config_does_not_use_reserved_word(self):
         class Foo(BaseModel):
-            from_: str = Field(..., alias='from')
+            from_: str = Field(alias='from')
 
             model_config = ConfigDict(populate_by_name=True)
 
@@ -324,7 +326,7 @@ class TestsBaseConfig:
         expected_value: int = 7
 
         class Foo(BaseModel):
-            bar_: int = Field(..., alias='bar')
+            bar_: int = Field(alias='bar')
 
             model_config = dict(populate_by_name=populate_by_name_config)
 
@@ -346,45 +348,37 @@ class TestsBaseConfig:
         assert m == m.model_copy()
 
     def test_config_class_is_deprecated(self):
-        with pytest.warns(
-            PydanticDeprecatedSince20, match='Support for class-based `config` is deprecated, use ConfigDict instead.'
-        ):
+        with pytest.warns(PydanticDeprecatedSince20) as all_warnings:
 
             class Config(BaseConfig):
                 pass
+
+        # typing-extensions swallows one of the warnings, so we need to support
+        # both ways for now.
+        assert len(all_warnings) in [1, 2]
+        expected_warnings = [
+            'Support for class-based `config` is deprecated, use ConfigDict instead',
+        ]
+        if len(all_warnings) == 2:
+            expected_warnings.insert(0, 'BaseConfig is deprecated. Use the `pydantic.ConfigDict` instead')
+        assert [w.message.message for w in all_warnings] == expected_warnings
 
     def test_config_class_attributes_are_deprecated(self):
-        with pytest.warns(
-            PydanticDeprecatedSince20,
-            match='Support for class-based `config` is deprecated, use ConfigDict instead.',
-        ):
+        with pytest.warns(PydanticDeprecatedSince20) as all_warnings:
             assert BaseConfig.validate_assignment is False
-
-        with pytest.warns(
-            PydanticDeprecatedSince20,
-            match='Support for class-based `config` is deprecated, use ConfigDict instead.',
-        ):
             assert BaseConfig().validate_assignment is False
-
-        with pytest.warns(
-            PydanticDeprecatedSince20,
-            match='Support for class-based `config` is deprecated, use ConfigDict instead.',
-        ):
 
             class Config(BaseConfig):
                 pass
 
-        with pytest.warns(
-            PydanticDeprecatedSince20,
-            match='Support for class-based `config` is deprecated, use ConfigDict instead.',
-        ):
             assert Config.validate_assignment is False
-
-        with pytest.warns(
-            PydanticDeprecatedSince20,
-            match='Support for class-based `config` is deprecated, use ConfigDict instead.',
-        ):
             assert Config().validate_assignment is False
+        assert len(all_warnings) == 7
+        expected_warnings = {
+            'Support for class-based `config` is deprecated, use ConfigDict instead',
+            'BaseConfig is deprecated. Use the `pydantic.ConfigDict` instead',
+        }
+        assert set(w.message.message for w in all_warnings) <= expected_warnings
 
     @pytest.mark.filterwarnings('ignore:.* is deprecated.*:DeprecationWarning')
     def test_config_class_missing_attributes(self):
@@ -525,7 +519,13 @@ def test_multiple_inheritance_config():
 
 
 def test_config_wrapper_match():
-    localns = {'_GenerateSchema': GenerateSchema, 'GenerateSchema': GenerateSchema, 'JsonValue': JsonValue}
+    localns = {
+        '_GenerateSchema': GenerateSchema,
+        'GenerateSchema': GenerateSchema,
+        'JsonValue': JsonValue,
+        'FieldInfo': FieldInfo,
+        'ComputedFieldInfo': ComputedFieldInfo,
+    }
     config_dict_annotations = [(k, str(v)) for k, v in get_type_hints(ConfigDict, localns=localns).items()]
     config_dict_annotations.sort()
     # remove config
@@ -559,7 +559,7 @@ def test_config_validation_error_cause():
         Foo(foo=4)
     # Confirm python error attached as a cause, and error location specified in a note:
     assert exc_info.value.__cause__ is not None
-    assert isinstance(exc_info.value.__cause__, ExceptionGroup)
+    assert isinstance(exc_info.value.__cause__, ExceptionGroup)  # noqa: F821
     assert len(exc_info.value.__cause__.exceptions) == 1
     src_exc = exc_info.value.__cause__.exceptions[0]
     assert repr(src_exc) == "AssertionError('Must be greater than 5\\nassert 4 > 5')"
@@ -568,7 +568,12 @@ def test_config_validation_error_cause():
 
 
 def test_config_defaults_match():
-    localns = {'_GenerateSchema': GenerateSchema, 'GenerateSchema': GenerateSchema}
+    localns = {
+        '_GenerateSchema': GenerateSchema,
+        'GenerateSchema': GenerateSchema,
+        'FieldInfo': FieldInfo,
+        'ComputedFieldInfo': ComputedFieldInfo,
+    }
     config_dict_keys = sorted(list(get_type_hints(ConfigDict, localns=localns).keys()))
     config_defaults_keys = sorted(list(config_defaults.keys()))
 
@@ -701,54 +706,156 @@ def test_json_encoders_type_adapter() -> None:
     assert json.loads(ta.dump_json(1)) == '2'
 
 
-def test_config_model_defer_build():
-    class MyModel(BaseModel, defer_build=True):
+@pytest.mark.parametrize('defer_build', [True, False])
+def test_config_model_defer_build(defer_build: bool, generate_schema_calls: CallCounter):
+    config = ConfigDict(defer_build=defer_build)
+
+    class MyModel(BaseModel):
+        model_config = config
         x: int
 
-    assert isinstance(MyModel.__pydantic_validator__, MockValSer)
-    assert isinstance(MyModel.__pydantic_serializer__, MockValSer)
+    if defer_build:
+        assert isinstance(MyModel.__pydantic_validator__, MockValSer)
+        assert isinstance(MyModel.__pydantic_serializer__, MockValSer)
+        assert generate_schema_calls.count == 0, 'Should respect defer_build'
+    else:
+        assert isinstance(MyModel.__pydantic_validator__, SchemaValidator)
+        assert isinstance(MyModel.__pydantic_serializer__, SchemaSerializer)
+        assert generate_schema_calls.count == 1, 'Should respect defer_build'
 
     m = MyModel(x=1)
     assert m.x == 1
+    assert m.model_dump()['x'] == 1
+    assert m.model_validate({'x': 2}).x == 2
+    assert m.model_json_schema()['type'] == 'object'
 
     assert isinstance(MyModel.__pydantic_validator__, SchemaValidator)
     assert isinstance(MyModel.__pydantic_serializer__, SchemaSerializer)
+    assert generate_schema_calls.count == 1, 'Should not build duplicated core schemas'
 
 
-def test_config_type_adapter_defer_build():
-    class MyModel(BaseModel, defer_build=True):
+@pytest.mark.parametrize('defer_build', [True, False])
+def test_config_dataclass_defer_build(defer_build: bool, generate_schema_calls: CallCounter) -> None:
+    config = ConfigDict(defer_build=defer_build)
+
+    @pydantic_dataclass(config=config)
+    class MyDataclass:
         x: int
+
+    if defer_build:
+        assert isinstance(MyDataclass.__pydantic_validator__, MockValSer)
+        assert isinstance(MyDataclass.__pydantic_serializer__, MockValSer)
+        assert generate_schema_calls.count == 0, 'Should respect defer_build'
+    else:
+        assert isinstance(MyDataclass.__pydantic_validator__, SchemaValidator)
+        assert isinstance(MyDataclass.__pydantic_serializer__, SchemaSerializer)
+        assert generate_schema_calls.count == 1, 'Should respect defer_build'
+
+    m = MyDataclass(x=1)
+    assert m.x == 1
+
+    assert isinstance(MyDataclass.__pydantic_validator__, SchemaValidator)
+    assert isinstance(MyDataclass.__pydantic_serializer__, SchemaSerializer)
+    assert generate_schema_calls.count == 1, 'Should not build duplicated core schemas'
+
+
+def test_dataclass_defer_build_override_on_rebuild_dataclass(generate_schema_calls: CallCounter) -> None:
+    config = ConfigDict(defer_build=True)
+
+    @pydantic_dataclass(config=config)
+    class MyDataclass:
+        x: int
+
+    assert isinstance(MyDataclass.__pydantic_validator__, MockValSer)
+    assert isinstance(MyDataclass.__pydantic_serializer__, MockValSer)
+    assert generate_schema_calls.count == 0, 'Should respect defer_build'
+
+    rebuild_dataclass(MyDataclass, force=True)
+    assert isinstance(MyDataclass.__pydantic_validator__, SchemaValidator)
+    assert isinstance(MyDataclass.__pydantic_serializer__, SchemaSerializer)
+    assert generate_schema_calls.count == 1, 'Should have called generate_schema once'
+
+
+@pytest.mark.parametrize('defer_build', [True, False])
+def test_config_model_type_adapter_defer_build(defer_build: bool, generate_schema_calls: CallCounter):
+    config = ConfigDict(defer_build=defer_build)
+
+    class MyModel(BaseModel):
+        model_config = config
+        x: int
+
+    assert generate_schema_calls.count == (0 if defer_build is True else 1)
+    generate_schema_calls.reset()
 
     ta = TypeAdapter(MyModel)
 
-    assert isinstance(ta.validator, MockValSer)
-    assert isinstance(ta.serializer, MockValSer)
+    assert generate_schema_calls.count == 0, 'Should use model generated schema'
 
-    m = ta.validate_python({'x': 1})
-    assert m.x == 1
-    m2 = ta.validate_python({'x': 2})
-    assert m2.x == 2
+    assert ta.validate_python({'x': 1}).x == 1
+    assert ta.validate_python({'x': 2}).x == 2
+    assert ta.dump_python(MyModel.model_construct(x=1))['x'] == 1
+    assert ta.json_schema()['type'] == 'object'
 
-    # in the future, can reassign said validators to the TypeAdapter
-    assert isinstance(MyModel.__pydantic_validator__, SchemaValidator)
-    assert isinstance(MyModel.__pydantic_serializer__, SchemaSerializer)
+    assert generate_schema_calls.count == (1 if defer_build is True else 0), 'Should not build duplicate core schemas'
 
 
-def test_config_model_defer_build_nested():
-    class MyNestedModel(BaseModel, defer_build=True):
+@pytest.mark.parametrize('defer_build', [True, False])
+def test_config_plain_type_adapter_defer_build(defer_build: bool, generate_schema_calls: CallCounter):
+    config = ConfigDict(defer_build=defer_build)
+
+    ta = TypeAdapter(Dict[str, int], config=config)
+
+    assert generate_schema_calls.count == (0 if defer_build else 1)
+    generate_schema_calls.reset()
+
+    assert ta.validate_python({}) == {}
+    assert ta.validate_python({'x': 1}) == {'x': 1}
+    assert ta.dump_python({'x': 2}) == {'x': 2}
+    assert ta.json_schema()['type'] == 'object'
+
+    assert generate_schema_calls.count == (1 if defer_build else 0), 'Should not build duplicate core schemas'
+
+
+@pytest.mark.parametrize('defer_build', [True, False])
+def test_config_model_defer_build_nested(defer_build: bool, generate_schema_calls: CallCounter):
+    config = ConfigDict(defer_build=defer_build)
+
+    assert generate_schema_calls.count == 0
+
+    class MyNestedModel(BaseModel):
+        model_config = config
         x: int
 
     class MyModel(BaseModel):
         y: MyNestedModel
 
-    assert isinstance(MyNestedModel.__pydantic_validator__, MockValSer)
-    assert isinstance(MyNestedModel.__pydantic_serializer__, MockValSer)
+    assert isinstance(MyModel.__pydantic_validator__, SchemaValidator)
+    assert isinstance(MyModel.__pydantic_serializer__, SchemaSerializer)
+
+    expected_schema_count = 1 if defer_build is True else 2
+    assert generate_schema_calls.count == expected_schema_count, 'Should respect defer_build'
+
+    if defer_build:
+        assert isinstance(MyNestedModel.__pydantic_validator__, MockValSer)
+        assert isinstance(MyNestedModel.__pydantic_serializer__, MockValSer)
+    else:
+        assert isinstance(MyNestedModel.__pydantic_validator__, SchemaValidator)
+        assert isinstance(MyNestedModel.__pydantic_serializer__, SchemaSerializer)
 
     m = MyModel(y={'x': 1})
+    assert m.y.x == 1
     assert m.model_dump() == {'y': {'x': 1}}
+    assert m.model_validate({'y': {'x': 1}}).y.x == 1
+    assert m.model_json_schema()['type'] == 'object'
 
-    assert isinstance(MyNestedModel.__pydantic_validator__, MockValSer)
-    assert isinstance(MyNestedModel.__pydantic_serializer__, MockValSer)
+    if defer_build:
+        assert isinstance(MyNestedModel.__pydantic_validator__, MockValSer)
+        assert isinstance(MyNestedModel.__pydantic_serializer__, MockValSer)
+    else:
+        assert isinstance(MyNestedModel.__pydantic_validator__, SchemaValidator)
+        assert isinstance(MyNestedModel.__pydantic_serializer__, SchemaSerializer)
+
+    assert generate_schema_calls.count == expected_schema_count, 'Should not build duplicated core schemas'
 
 
 def test_config_model_defer_build_ser_first():
@@ -807,7 +914,7 @@ def test_model_config_as_model_field_raises():
     assert exc_info.value.code == 'model-config-invalid-field-name'
 
 
-def test_dataclass_allowes_model_config_as_model_field():
+def test_dataclass_allows_model_config_as_model_field():
     config_title = 'from_config'
     field_title = 'from_field'
 
@@ -818,4 +925,30 @@ def test_dataclass_allowes_model_config_as_model_field():
     m = MyDataclass(model_config={'title': field_title})
 
     assert m.model_config['title'] == field_title
-    assert getattr(m, '__pydantic_config__')['title'] == config_title
+    assert m.__pydantic_config__['title'] == config_title
+
+
+def test_with_config_disallowed_with_model():
+    msg = 'Cannot use `with_config` on Model as it is a Pydantic model'
+
+    with pytest.raises(PydanticUserError, match=msg):
+
+        @with_config({'coerce_numbers_to_str': True})
+        class Model(BaseModel):
+            pass
+
+
+def test_empty_config_with_annotations():
+    class Model(BaseModel):
+        model_config: ConfigDict = {}
+
+    assert Model.model_config == {}
+
+
+def test_generate_schema_deprecation_warning() -> None:
+    with pytest.warns(
+        PydanticDeprecatedSince210, match='The `schema_generator` setting has been deprecated since v2.10.'
+    ):
+
+        class Model(BaseModel):
+            model_config = ConfigDict(schema_generator=GenerateSchema)

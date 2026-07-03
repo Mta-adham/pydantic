@@ -274,7 +274,7 @@ def test_self_reference_json_schema(create_module):
 
     Account = module.Account
     assert Account.model_json_schema() == {
-        'allOf': [{'$ref': '#/$defs/Account'}],
+        '$ref': '#/$defs/Account',
         '$defs': {
             'Account': {
                 'title': 'Account',
@@ -308,7 +308,7 @@ class Account(BaseModel):
     )
     Account = module.Account
     assert Account.model_json_schema() == {
-        'allOf': [{'$ref': '#/$defs/Account'}],
+        '$ref': '#/$defs/Account',
         '$defs': {
             'Account': {
                 'title': 'Account',
@@ -345,7 +345,7 @@ def test_circular_reference_json_schema(create_module):
 
     Account = module.Account
     assert Account.model_json_schema() == {
-        'allOf': [{'$ref': '#/$defs/Account'}],
+        '$ref': '#/$defs/Account',
         '$defs': {
             'Account': {
                 'title': 'Account',
@@ -391,7 +391,7 @@ class Account(BaseModel):
     )
     Account = module.Account
     assert Account.model_json_schema() == {
-        'allOf': [{'$ref': '#/$defs/Account'}],
+        '$ref': '#/$defs/Account',
         '$defs': {
             'Account': {
                 'title': 'Account',
@@ -421,6 +421,7 @@ class Account(BaseModel):
 def test_forward_ref_with_field(create_module):
     @create_module
     def module():
+        import re
         from typing import ForwardRef, List
 
         import pytest
@@ -429,10 +430,11 @@ def test_forward_ref_with_field(create_module):
 
         Foo = ForwardRef('Foo')
 
-        with pytest.raises(TypeError, match=r'The following constraints cannot be applied.*\'gt\''):
+        class Foo(BaseModel):
+            c: List[Foo] = Field(gt=0)
 
-            class Foo(BaseModel):
-                c: List[Foo] = Field(..., gt=0)
+        with pytest.raises(TypeError, match=re.escape("Unable to apply constraint 'gt' to supplied value []")):
+            Foo(c=[Foo(c=[])])
 
 
 def test_forward_ref_optional(create_module):
@@ -444,7 +446,7 @@ from pydantic import BaseModel, Field
 
 
 class Spec(BaseModel):
-    spec_fields: list[str] = Field(..., alias="fields")
+    spec_fields: list[str] = Field(alias="fields")
     filter: str | None = None
     sort: str | None
 
@@ -556,13 +558,13 @@ def test_discriminated_union_forward_ref(create_module):
             'Cat': {
                 'title': 'Cat',
                 'type': 'object',
-                'properties': {'type': {'const': 'cat', 'enum': ['cat'], 'title': 'Type', 'type': 'string'}},
+                'properties': {'type': {'const': 'cat', 'title': 'Type', 'type': 'string'}},
                 'required': ['type'],
             },
             'Dog': {
                 'title': 'Dog',
                 'type': 'object',
-                'properties': {'type': {'const': 'dog', 'enum': ['dog'], 'title': 'Type', 'type': 'string'}},
+                'properties': {'type': {'const': 'dog', 'title': 'Type', 'type': 'string'}},
                 'required': ['type'],
             },
         },
@@ -574,15 +576,26 @@ def test_class_var_as_string(create_module):
         # language=Python
         """
 from __future__ import annotations
-from typing import ClassVar
+from typing import ClassVar, ClassVar as CV
+from typing_extensions import Annotated
 from pydantic import BaseModel
 
 class Model(BaseModel):
     a: ClassVar[int]
+    _b: ClassVar[int]
+    _c: ClassVar[Forward]
+    _d: Annotated[ClassVar[int], ...]
+    _e: CV[int]
+    _f: Annotated[CV[int], ...]
+    # Doesn't work as of today:
+    # _g: CV[Forward]
+
+Forward = int
 """
     )
 
-    assert module.Model.__class_vars__ == {'a'}
+    assert module.Model.__class_vars__ == {'a', '_b', '_c', '_d', '_e', '_f'}
+    assert module.Model.__private_attributes__ == {}
 
 
 def test_json_encoder_str(create_module):
@@ -1079,3 +1092,261 @@ def test_forward_ref_in_generic_separate_modules(create_module: Any) -> None:
     Bar = module_2.Bar
     Foo.model_rebuild(_types_namespace={'tp': typing, 'Bar': Bar})
     assert Foo(x={Bar: Bar}).x[Bar] is Bar
+
+
+def test_invalid_forward_ref() -> None:
+    class CustomType:
+        """A custom type that isn't subscriptable."""
+
+    msg = "Unable to evaluate type annotation 'CustomType[int]'."
+
+    with pytest.raises(TypeError, match=re.escape(msg)):
+
+        class Model(BaseModel):
+            foo: 'CustomType[int]'
+
+
+def test_pydantic_extra_forward_ref_separate_module(create_module: Any) -> None:
+    """https://github.com/pydantic/pydantic/issues/10069"""
+
+    @create_module
+    def module_1():
+        from typing import Dict
+
+        from pydantic import BaseModel, ConfigDict
+
+        class Bar(BaseModel):
+            model_config = ConfigDict(defer_build=True, extra='allow')
+
+            __pydantic_extra__: 'Dict[str, int]'
+
+    module_2 = create_module(
+        f"""
+from pydantic import BaseModel
+
+from {module_1.__name__} import Bar
+
+class Foo(BaseModel):
+    bar: Bar
+        """
+    )
+
+    extras_schema = module_2.Foo.__pydantic_core_schema__['schema']['fields']['bar']['schema']['schema'][
+        'extras_schema'
+    ]
+
+    assert extras_schema == {'type': 'int'}
+
+
+@pytest.mark.xfail(
+    reason='While `get_cls_type_hints` uses the correct module ns for each base, `collect_model_fields` '
+    'will still use the `FieldInfo` instances from each base (see the `parent_fields_lookup` logic). '
+    'This means that `f` is still a forward ref in `Foo.model_fields`, and it gets evaluated in '
+    '`GenerateSchema._model_schema`, where only the module of `Foo` is considered.'
+)
+def test_uses_the_correct_globals_to_resolve_model_forward_refs(create_module):
+    @create_module
+    def module_1():
+        from pydantic import BaseModel
+
+        class Bar(BaseModel):
+            f: 'A'
+
+        A = int
+
+    module_2 = create_module(
+        f"""
+from {module_1.__name__} import Bar
+
+A = str
+
+class Foo(Bar):
+    pass
+        """
+    )
+
+    assert module_2.Foo.model_fields['f'].annotation is int
+
+
+@pytest.mark.xfail(
+    reason='We should keep a reference to the parent frame, not `f_locals`. '
+    "It's probably only reasonable to support this in Python 3.14 with PEP 649."
+)
+def test_can_resolve_forward_refs_in_parent_frame_after_class_definition():
+    def func():
+        class Model(BaseModel):
+            a: 'A'
+
+        class A(BaseModel):
+            pass
+
+        return Model
+
+    Model = func()
+
+    Model.model_rebuild()
+
+
+def test_uses_correct_global_ns_for_type_defined_in_separate_module(create_module):
+    @create_module
+    def module_1():
+        from dataclasses import dataclass
+
+        @dataclass
+        class Bar:
+            f: 'A'
+
+        A = int
+
+    module_2 = create_module(
+        f"""
+from pydantic import BaseModel
+from {module_1.__name__} import Bar
+
+A = str
+
+class Foo(BaseModel):
+    bar: Bar
+        """
+    )
+
+    module_2.Foo(bar={'f': 1})
+
+
+def test_uses_the_local_namespace_when_generating_schema():
+    def func():
+        A = int
+
+        class Model(BaseModel):
+            __pydantic_extra__: 'dict[str, A]'
+
+            model_config = {'defer_build': True, 'extra': 'allow'}
+
+        return Model
+
+    Model = func()
+
+    A = str  # noqa: F841
+
+    Model.model_rebuild()
+    Model(extra_value=1)
+
+
+def test_uses_the_correct_globals_to_resolve_dataclass_forward_refs(create_module):
+    @create_module
+    def module_1():
+        from dataclasses import dataclass
+
+        A = int
+
+        @dataclass
+        class DC1:
+            a: 'A'
+
+    module_2 = create_module(f"""
+from dataclasses import dataclass
+
+from pydantic import BaseModel
+
+from {module_1.__name__} import DC1
+
+A = str
+
+@dataclass
+class DC2(DC1):
+    b: 'A'
+
+class Model(BaseModel):
+    dc: DC2
+    """)
+
+    Model = module_2.Model
+
+    Model(dc=dict(a=1, b='not_an_int'))
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason='Requires PEP 695 syntax')
+def test_class_locals_are_kept_during_schema_generation(create_module):
+    create_module(
+        """
+from pydantic import BaseModel
+
+class Model(BaseModel):
+    type Test = int
+    a: 'Test | Forward'
+
+Forward = str
+
+Model.model_rebuild()
+        """
+    )
+
+
+def test_validate_call_does_not_override_the_global_ns_with_the_local_ns_where_it_is_used(create_module):
+    from pydantic import validate_call
+
+    @create_module
+    def module_1():
+        A = int
+
+        def func(a: 'A'):
+            pass
+
+    def inner():
+        A = str  # noqa: F841
+
+        from module_1 import func
+
+        func_val = validate_call(func)
+
+        func_val(a=1)
+
+
+@pytest.mark.xfail(
+    reason='In `GenerateSchema`, only the current class module is taken into account. '
+    'This is similar to `test_uses_the_correct_globals_to_resolve_model_forward_refs`.'
+)
+def test_uses_the_correct_globals_to_resolve_forward_refs_on_serializers(create_module):
+    @create_module
+    def module_1():
+        from pydantic import BaseModel, field_serializer  # or model_serializer
+
+        MyStr = str
+
+        class Model(BaseModel):
+            a: int
+
+            @field_serializer('a')
+            def ser(self) -> 'MyStr':
+                return str(self.a)
+
+    class Sub(module_1.Model):
+        pass
+
+    Sub.model_rebuild()
+
+
+@pytest.mark.xfail(reason='parent namespace is used for every type in `NsResolver`, for backwards compatibility.')
+def test_do_not_use_parent_ns_when_outside_the_function(create_module):
+    @create_module
+    def module_1():
+        import dataclasses
+
+        from pydantic import BaseModel
+
+        @dataclasses.dataclass
+        class A:
+            a: 'Model'  # shouldn't resolve
+            b: 'Test'  # same
+
+        def inner():
+            Test = int  # noqa: F841
+
+            class Model(BaseModel, A):
+                pass
+
+            return Model
+
+        ReturnedModel = inner()  # noqa: F841
+
+    assert module_1.ReturnedModel.__pydantic_complete__ is False

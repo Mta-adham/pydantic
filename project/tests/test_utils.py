@@ -1,7 +1,9 @@
 import collections.abc
+import json
 import os
 import pickle
 import sys
+import time
 from copy import copy, deepcopy
 from typing import Callable, Dict, Generic, List, NewType, Tuple, TypeVar, Union
 
@@ -12,11 +14,11 @@ from typing_extensions import Annotated, Literal
 
 from pydantic import BaseModel
 from pydantic._internal import _repr
-from pydantic._internal._core_utils import _WalkCoreSchema
-from pydantic._internal._typing_extra import all_literal_values, get_origin, is_new_type
+from pydantic._internal._core_utils import _WalkCoreSchema, pretty_print_core_schema
+from pydantic._internal._typing_extra import get_origin, is_new_type, literal_values
 from pydantic._internal._utils import (
     BUILTIN_COLLECTIONS,
-    ClassAttribute,
+    LazyClassAttribute,
     ValueItems,
     all_identical,
     deep_update,
@@ -56,8 +58,7 @@ T = TypeVar('T')
 
 
 class LoggedVar(Generic[T]):
-    def get(self) -> T:
-        ...
+    def get(self) -> T: ...
 
 
 @pytest.mark.parametrize(
@@ -76,6 +77,7 @@ class LoggedVar(Generic[T]):
         (Tuple[str, ...], 'Tuple[str, ...]'),
         (Union[int, List[str], Tuple[str, int]], 'Union[int, List[str], Tuple[str, int]]'),
         (foobar, 'foobar'),
+        (time.time_ns, 'time_ns'),
         (LoggedVar, 'LoggedVar'),
         (LoggedVar(), 'LoggedVar'),
     ],
@@ -366,7 +368,7 @@ def test_undefined_copy():
 
 def test_class_attribute():
     class Foo:
-        attr = ClassAttribute('attr', 'foo')
+        attr = LazyClassAttribute('attr', lambda: 'foo')
 
     assert Foo.attr == 'foo'
 
@@ -378,21 +380,21 @@ def test_class_attribute():
     assert f.attr == 'not foo'
 
 
-def test_all_literal_values():
+def test_literal_values():
     L1 = Literal['1']
-    assert all_literal_values(L1) == ['1']
+    assert literal_values(L1) == ['1']
 
     L2 = Literal['2']
     L12 = Literal[L1, L2]
-    assert all_literal_values(L12) == IsList('1', '2', check_order=False)
+    assert literal_values(L12) == IsList('1', '2', check_order=False)
 
     L312 = Literal['3', Literal[L1, L2]]
-    assert all_literal_values(L312) == IsList('3', '1', '2', check_order=False)
+    assert literal_values(L312) == IsList('3', '1', '2', check_order=False)
 
 
 @pytest.mark.parametrize(
     'obj',
-    (1, 1.0, '1', b'1', int, None, test_all_literal_values, len, test_all_literal_values.__code__, lambda: ..., ...),
+    (1, 1.0, '1', b'1', int, None, test_literal_values, len, test_literal_values.__code__, lambda: ..., ...),
 )
 def test_smart_deepcopy_immutable_non_sequence(obj, mocker):
     # make sure deepcopy is not used
@@ -512,7 +514,7 @@ def test_snake2camel_start_lower(value: str, result: str) -> None:
         ('snake_2_', 'Snake2_'),
     ],
 )
-def test_snake2camel(value: str, result: str) -> None:
+def test_snake2pascal(value: str, result: str) -> None:
     assert to_pascal(value) == result
 
 
@@ -537,10 +539,20 @@ def test_snake2camel(value: str, result: str) -> None:
         ('camel2', 'camel_2'),
         ('camel2_', 'camel_2_'),
         ('_camel2', '_camel_2'),
+        ('kebab-to-snake', 'kebab_to_snake'),
+        ('kebab-Snake', 'kebab_snake'),
+        ('Kebab-Snake', 'kebab_snake'),
+        ('PascalToSnake', 'pascal_to_snake'),
+        ('snake_to_snake', 'snake_to_snake'),
+        ('snakeV2', 'snake_v2'),
     ],
 )
-def test_camel2snake(value: str, result: str) -> None:
+def test_to_snake(value: str, result: str) -> None:
     assert to_snake(value) == result
+
+
+def test_to_camel_from_camel() -> None:
+    assert to_camel('alreadyCamel') == 'alreadyCamel'
 
 
 def test_handle_tuple_schema():
@@ -666,3 +678,108 @@ def test_handle_call_schema():
 
     schema = _WalkCoreSchema().handle_call_schema(schema, walk)
     assert schema['return_schema'] == {'type': 'int'}
+
+
+class TestModel:
+    __slots__ = (
+        '__dict__',
+        '__pydantic_fields_set__',
+        '__pydantic_extra__',
+        '__pydantic_private__',
+    )
+
+
+@pytest.mark.parametrize(
+    'include_metadata, schema, expected',
+    [
+        # including metadata with a simple any schema
+        (
+            True,
+            core_schema.AnySchema(
+                type='any',
+                ref='meta_schema',
+                metadata={'schema_type': 'any', 'test_id': '42'},
+                serialization=core_schema.simple_ser_schema('bool'),
+            ),
+            {
+                'type': 'any',
+                'ref': 'meta_schema',
+                'metadata': {'schema_type': 'any', 'test_id': '42'},
+                'serialization': {'type': 'bool'},
+            },
+        ),
+        # excluding metadata with a model_fields_schema
+        (
+            False,
+            core_schema.model_fields_schema(
+                ref='meta_schema',
+                metadata={'schema_type': 'model', 'test_id': '43'},
+                computed_fields=[
+                    core_schema.computed_field(
+                        property_name='TestModel',
+                        return_schema=core_schema.model_fields_schema(
+                            fields={'a': core_schema.model_field(core_schema.str_schema())},
+                        ),
+                        alias='comp_field_1',
+                        metadata={'comp_field_key': 'comp_field_data'},
+                    )
+                ],
+                fields={'a': core_schema.model_field(core_schema.str_schema())},
+            ),
+            {
+                'type': 'model-fields',
+                'fields': {'a': {'type': 'model-field', 'schema': {'type': 'str'}}},
+                'computed_fields': [
+                    {
+                        'type': 'computed-field',
+                        'property_name': 'TestModel',
+                        'return_schema': {
+                            'type': 'model-fields',
+                            'fields': {'a': {'type': 'model-field', 'schema': {'type': 'str'}}},
+                        },
+                        'alias': 'comp_field_1',
+                        'metadata': {'comp_field_key': 'comp_field_data'},
+                    }
+                ],
+                'ref': 'meta_schema',
+            },
+        ),
+        # exclude metadata with a model_schema
+        (
+            False,
+            core_schema.model_schema(
+                ref='meta_schema',
+                metadata={'schema_type': 'model', 'test_id': '43'},
+                custom_init=False,
+                root_model=False,
+                cls=TestModel,
+                config=core_schema.CoreConfig(str_max_length=5),
+                schema=core_schema.model_fields_schema(
+                    fields={'a': core_schema.model_field(core_schema.str_schema())},
+                ),
+            ),
+            {
+                'type': 'model',
+                'schema': {'type': 'model-fields', 'fields': {'a': {'type': 'model-field', 'schema': {'type': 'str'}}}},
+                'config': {'str_max_length': 5},
+                'ref': 'meta_schema',
+            },
+        ),
+    ],
+)
+def test_pretty_print(include_metadata, schema, expected, capfd, monkeypatch):
+    """Verify basic functionality of pretty_print_core_schema, which is used as a utility for debugging.
+
+    Given varied output, this test verifies that the content of the output is as expected,
+    Rather than doing robust formatting testing.
+    """
+    # This can break the test by adding color to the output streams
+    monkeypatch.delenv('FORCE_COLOR', raising=False)
+
+    pretty_print_core_schema(schema=schema, include_metadata=include_metadata)
+    content = capfd.readouterr()
+    # Remove cls due to string formatting (for case 3 above)
+    cls_substring = "'cls': <class 'tests.test_utils.TestModel'>,"
+    new_content_out = content.out.replace(cls_substring, '')
+    content_as_json = json.loads(new_content_out.replace("'", '"'))
+    assert content_as_json == expected

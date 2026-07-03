@@ -12,6 +12,7 @@ from pydantic import (
     ClickHouseDsn,
     CockroachDsn,
     FileUrl,
+    FtpUrl,
     HttpUrl,
     KafkaDsn,
     MariaDBDsn,
@@ -21,11 +22,14 @@ from pydantic import (
     NatsDsn,
     PostgresDsn,
     RedisDsn,
+    SnowflakeDsn,
     Strict,
+    TypeAdapter,
     UrlConstraints,
     ValidationError,
+    WebsocketUrl,
 )
-from pydantic.networks import validate_email
+from pydantic.networks import import_email_validator, validate_email
 
 try:
     import email_validator
@@ -60,6 +64,8 @@ except ImportError:
         'mariadb://user:pass@localhost:3306/app',
         'mariadb+mariadbconnector://user:pass@localhost:3306/app',
         'mariadb+pymysql://user:pass@localhost:3306/app',
+        'snowflake://user:pass@myorganization-myaccount',
+        'snowflake://user:pass@myorganization-myaccount/testdb/public?warehouse=testwh&role=myrole',
         'foo-bar://example.org',
         'foo.bar://example.org',
         'foo0bar://example.org',
@@ -102,7 +108,6 @@ except ImportError:
         'http://example.org/path#fragment',
         'http://example.org/path?query#',
         'http://example.org/path?query#fragment',
-        'file://localhost/foo/bar',
     ],
 )
 def test_any_url_success(value):
@@ -163,7 +168,7 @@ def validate_url(s):
 def test_any_url_parts():
     url = validate_url('http://example.org')
     assert str(url) == 'http://example.org/'
-    assert repr(url) == "Url('http://example.org/')"
+    assert repr(url) == "AnyUrl('http://example.org/')"
     assert url.scheme == 'http'
     assert url.host == 'example.org'
     assert url.port == 80
@@ -172,7 +177,7 @@ def test_any_url_parts():
 def test_url_repr():
     url = validate_url('http://user:password@example.org:1234/the/path/?query=here#fragment=is;this=bit')
     assert str(url) == 'http://user:password@example.org:1234/the/path/?query=here#fragment=is;this=bit'
-    assert repr(url) == "Url('http://user:password@example.org:1234/the/path/?query=here#fragment=is;this=bit')"
+    assert repr(url) == "AnyUrl('http://user:password@example.org:1234/the/path/?query=here#fragment=is;this=bit')"
     assert url.scheme == 'http'
     assert url.username == 'user'
     assert url.password == 'password'
@@ -369,6 +374,104 @@ def test_http_urls_default_port(url, expected_port, expected_str):
 
 
 @pytest.mark.parametrize(
+    'value,expected',
+    [
+        ('ws://example.com', 'ws://example.com/'),
+        ('wss://example.com', 'wss://example.com/'),
+        ('wss://ws.example.com/', 'wss://ws.example.com/'),
+        ('ws://ws.example.com/', 'ws://ws.example.com/'),
+        ('ws://example.com:8080', 'ws://example.com:8080/'),
+        ('ws://example.com/path', 'ws://example.com/path'),
+        ('wss://example.com:4433', 'wss://example.com:4433/'),
+        ('wss://example.com/path', 'wss://example.com/path'),
+    ],
+)
+def test_websocket_url_success(value, expected):
+    class Schema(BaseModel):
+        ws: WebsocketUrl
+
+    assert Schema(ws=value).ws.unicode_string() == expected
+
+
+@pytest.mark.parametrize(
+    'value,expected',
+    [
+        ('ws://example.com', 80),
+        ('wss://example.com', 443),
+        ('wss://ws.example.com/', 443),
+        ('ws://ws.example.com/', 80),
+        ('ws://example.com:8080', 8080),
+        ('ws://example.com:9999/path', 9999),
+        ('wss://example.com:4433', 4433),
+        ('wss://example.com/path', 443),
+    ],
+)
+def test_websocket_url_port_success(value, expected):
+    class Schema(BaseModel):
+        ws: WebsocketUrl
+
+    assert Schema(ws=value).ws.port == expected
+
+
+@pytest.mark.parametrize(
+    'value,expected',
+    [
+        ('ws://example.com', '/'),
+        ('wss://example.com', '/'),
+        ('wss://ws.example.com/', '/'),
+        ('ws://ws.example.com/', '/'),
+        ('ws://example.com:8080', '/'),
+        ('ws://example.com:9999/path', '/path'),
+        ('wss://example.com:4433', '/'),
+        ('wss://example.com/path/to/ws', '/path/to/ws'),
+    ],
+)
+def test_websocket_url_path_success(value, expected):
+    class Schema(BaseModel):
+        ws: WebsocketUrl
+
+    assert Schema(ws=value).ws.path == expected
+
+
+@pytest.mark.parametrize(
+    'value,expected',
+    [
+        ('ftp://example.com', 'ftp://example.com/'),
+        ('ftp://example.com/path/to/ftp', 'ftp://example.com/path/to/ftp'),
+        ('ftp://example.com:21', 'ftp://example.com/'),
+        ('ftp://example.com:21/path/to/ftp', 'ftp://example.com/path/to/ftp'),
+        ('ftp://example.com', 'ftp://example.com/'),
+        ('ftp://example.com/path/to/ftp', 'ftp://example.com/path/to/ftp'),
+        ('ftp://example.com:990', 'ftp://example.com:990/'),
+        ('ftp://example.com:990/path/to/ftp', 'ftp://example.com:990/path/to/ftp'),
+    ],
+)
+def test_ftp_url_success(value, expected):
+    class Schema(BaseModel):
+        ftp: FtpUrl
+
+    assert Schema(ftp=value).ftp.unicode_string() == expected
+
+
+@pytest.mark.parametrize(
+    'value,expected',
+    [
+        ('ftp://example.com', 21),
+        ('ftp://example.com/path/to/ftp', 21),
+        ('ftp://example.com:21', 21),
+        ('ftp://exaMplФ.com:221/path/to/ftp', 221),
+        ('ftp://example.com:144', 144),
+        ('ftp://example.com:990/path/to/ftp', 990),
+    ],
+)
+def test_ftp_url_port_success(value, expected):
+    class Schema(BaseModel):
+        ftp: FtpUrl
+
+    assert Schema(ftp=value).ftp.port == expected
+
+
+@pytest.mark.parametrize(
     'dsn',
     [
         'postgres://user:pass@localhost:5432/app',
@@ -430,6 +533,20 @@ def test_mariadb_dsns(dsn):
 def test_clickhouse_dsns(dsn):
     class Model(BaseModel):
         a: ClickHouseDsn
+
+    assert str(Model(a=dsn).a) == dsn
+
+
+@pytest.mark.parametrize(
+    'dsn',
+    [
+        'snowflake://user:pass@myorganization-myaccount',
+        'snowflake://user:pass@myorganization-myaccount/testdb/public?warehouse=testwh&role=myrole',
+    ],
+)
+def test_snowflake_dsns(dsn):
+    class Model(BaseModel):
+        a: SnowflakeDsn
 
     assert str(Model(a=dsn).a) == dsn
 
@@ -791,6 +908,8 @@ def test_json():
         ('FOO bar   <foobar@example.com> ', 'FOO bar', 'foobar@example.com'),
         (' Whatever <foobar@example.com>', 'Whatever', 'foobar@example.com'),
         ('Whatever < foobar@example.com>', 'Whatever', 'foobar@example.com'),
+        ('Whatever <foobar@example.com >', 'Whatever', 'foobar@example.com'),
+        ('Whatever < foobar@example.com >', 'Whatever', 'foobar@example.com'),
         ('<FOOBAR@example.com> ', 'FOOBAR', 'FOOBAR@example.com'),
         ('ñoñó@example.com', 'ñoñó', 'ñoñó@example.com'),
         ('我買@example.com', '我買', '我買@example.com'),
@@ -823,7 +942,7 @@ def test_address_valid(value, name, email):
     [
         ('@example.com', 'There must be something before the @-sign.'),
         ('f oo.bar@example.com', 'The email address contains invalid characters before the @-sign'),
-        ('foobar', 'The email address is not valid. It must have exactly one @-sign.'),
+        ('foobar', 'An email address must have an @-sign.'),
         ('foobar@localhost', 'The part after the @-sign is not valid. It should have a period.'),
         ('foobar@127.0.0.1', 'The part after the @-sign is not valid. It is not within a valid top-level domain.'),
         ('foo.bar@exam\nple.com ', None),
@@ -853,10 +972,27 @@ def test_address_invalid(value: str, reason: Union[str, None]):
         validate_email(value)
 
 
-@pytest.mark.skipif(email_validator, reason='email_validator is installed')
-def test_email_validator_not_installed():
+def test_email_validator_not_installed(mocker):
+    mocker.patch('pydantic.networks.email_validator', None)
+    m = mocker.patch('pydantic.networks.import_email_validator', side_effect=ImportError)
     with pytest.raises(ImportError):
         validate_email('s@muelcolvin.com')
+        m.assert_called_once()
+
+
+def test_import_email_validator_not_installed(mocker):
+    mocker.patch.dict('sys.modules', {'email_validator': None})
+    with pytest.raises(ImportError, match=r'email-validator is not installed, run `pip install pydantic\[email\]`'):
+        import_email_validator()
+
+
+@pytest.mark.skipif(not email_validator, reason='email_validator not installed')
+def test_import_email_validator_invalid_version(mocker):
+    mocker.patch('pydantic.networks.version', return_value='1.0.0')
+    with pytest.raises(
+        ImportError, match=r'email-validator version >= 2.0 required, run pip install -U email-validator'
+    ):
+        import_email_validator()
 
 
 @pytest.mark.skipif(not email_validator, reason='email_validator not installed')
@@ -896,3 +1032,33 @@ def test_name_email_serialization():
 
     obj = json.loads(m.model_dump_json())
     Model(email=obj['email'])
+
+
+def test_specialized_urls() -> None:
+    ta = TypeAdapter(HttpUrl)
+
+    http_url = ta.validate_python('http://example.com/something')
+    assert str(http_url) == 'http://example.com/something'
+    assert repr(http_url) == "HttpUrl('http://example.com/something')"
+    assert http_url.__class__ == HttpUrl
+    assert http_url.host == 'example.com'
+    assert http_url.path == '/something'
+    assert http_url.username is None
+    assert http_url.password is None
+
+    http_url2 = ta.validate_python(http_url)
+    assert str(http_url2) == 'http://example.com/something'
+    assert repr(http_url2) == "HttpUrl('http://example.com/something')"
+    assert http_url2.__class__ == HttpUrl
+    assert http_url2.host == 'example.com'
+    assert http_url2.path == '/something'
+    assert http_url2.username is None
+    assert http_url2.password is None
+
+
+def test_url_equality() -> None:
+    # works for descendants of _BaseUrl and _BaseMultiHostUrl
+    assert HttpUrl('http://example.com/something') == HttpUrl('http://example.com/something')
+    assert PostgresDsn('postgres://user:pass@localhost:5432/app') == PostgresDsn(
+        'postgres://user:pass@localhost:5432/app'
+    )

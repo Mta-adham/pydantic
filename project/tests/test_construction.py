@@ -4,7 +4,7 @@ from typing import Any, List, Optional
 import pytest
 from pydantic_core import PydanticUndefined, ValidationError
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, PydanticDeprecatedSince20
+from pydantic import AliasChoices, AliasPath, BaseModel, ConfigDict, Field, PrivateAttr, PydanticDeprecatedSince20
 
 
 class Model(BaseModel):
@@ -72,6 +72,26 @@ def test_construct_keep_order():
     assert instance == instance_construct
     assert instance.model_dump() == instance_construct.model_dump()
     assert instance.model_dump_json() == instance_construct.model_dump_json()
+
+
+def test_construct_with_aliases():
+    class MyModel(BaseModel):
+        x: int = Field(alias='x_alias')
+
+    my_model = MyModel.model_construct(x_alias=1)
+    assert my_model.x == 1
+    assert my_model.model_fields_set == {'x'}
+    assert my_model.model_dump() == {'x': 1}
+
+
+def test_construct_with_validation_aliases():
+    class MyModel(BaseModel):
+        x: int = Field(validation_alias='x_alias')
+
+    my_model = MyModel.model_construct(x_alias=1)
+    assert my_model.x == 1
+    assert my_model.model_fields_set == {'x'}
+    assert my_model.model_dump() == {'x': 1}
 
 
 def test_large_any_str():
@@ -541,3 +561,29 @@ def test_initialize_with_private_attr():
 
     assert m._a == 'a'
     assert '_a' in m.__pydantic_private__
+
+
+def test_model_construct_with_alias_choices() -> None:
+    class MyModel(BaseModel):
+        a: str = Field(validation_alias=AliasChoices('aaa', 'AAA'))
+
+    assert MyModel.model_construct(a='a_value').a == 'a_value'
+    assert MyModel.model_construct(aaa='a_value').a == 'a_value'
+    assert MyModel.model_construct(AAA='a_value').a == 'a_value'
+
+
+def test_model_construct_with_alias_path() -> None:
+    class MyModel(BaseModel):
+        a: str = Field(validation_alias=AliasPath('aaa', 'AAA'))
+
+    assert MyModel.model_construct(a='a_value').a == 'a_value'
+    assert MyModel.model_construct(aaa={'AAA': 'a_value'}).a == 'a_value'
+
+
+def test_model_construct_with_alias_choices_and_path() -> None:
+    class MyModel(BaseModel):
+        a: str = Field(validation_alias=AliasChoices('aaa', AliasPath('AAA', 'aaa')))
+
+    assert MyModel.model_construct(a='a_value').a == 'a_value'
+    assert MyModel.model_construct(aaa='a_value').a == 'a_value'
+    assert MyModel.model_construct(AAA={'aaa': 'a_value'}).a == 'a_value'

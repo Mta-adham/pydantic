@@ -1,5 +1,4 @@
 # Pydantic
-
 [![CI](https://img.shields.io/github/actions/workflow/status/pydantic/pydantic/ci.yml?branch=main&logo=github&label=CI)](https://github.com/pydantic/pydantic/actions?query=event%3Apush+branch%3Amain+workflow%3ACI)
 [![Coverage](https://coverage-badge.samuelcolvin.workers.dev/pydantic/pydantic.svg)](https://coverage-badge.samuelcolvin.workers.dev/redirect/pydantic/pydantic)
 [![pypi](https://img.shields.io/pypi/v/pydantic.svg)](https://pypi.python.org/pypi/pydantic)
@@ -14,10 +13,10 @@ Data validation using Python type hints.
 Fast and extensible, Pydantic plays nicely with your linters/IDE/brain.
 Define how data should be in pure, canonical Python 3.8+; validate it with Pydantic.
 
-## Pydantic Company :rocket:
+## Pydantic Logfire :fire:
 
-We've started a company based on the principles that I believe have led to Pydantic's success.
-Learning more from the [Company Announcement](https://blog.pydantic.dev/blog/2023/02/16/company-announcement--pydantic/).
+We've recently launched Pydantic Logfire to help you monitor your applications.
+[Learn more](https://pydantic.dev/articles/logfire-announcement)
 
 ## Pydantic V1.10 vs. V2
 

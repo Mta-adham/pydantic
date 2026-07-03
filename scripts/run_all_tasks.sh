@@ -9,6 +9,40 @@ pydantic_export_paths
 pydantic_load_env
 cd "${SCRIPT_DIR}/.."
 
+PY="${PY:-python3}"
+export GSO_WORKSPACE_ROOT="${PYDANTIC_ROOT}"
+export GSO_PROJECT_ROOT="${PYDANTIC_ROOT}/project"
+
+verify_task_state() {
+    local iid="$1"
+    "${PY}" - "${iid}" "${PYDANTIC_ROOT}/scripts/workflow.py" <<'PY'
+import importlib.util, json, subprocess, sys
+from pathlib import Path
+
+wf = sys.argv[2]
+spec = importlib.util.spec_from_file_location("gso_workflow", wf)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+iid = sys.argv[1]
+root = m.benchmark_root()
+active = m.read_active_instance_id()
+if active != iid:
+    print(f"active task {active!r} != {iid!r}")
+    sys.exit(1)
+if not m.project_commit_matches_task(iid):
+    print("project/ commit mismatch")
+    sys.exit(1)
+meta = json.loads((m.workspace_dir(iid) / "metadata.json").read_text())
+if meta.get("instance_id") != iid:
+    print("metadata instance_id mismatch")
+    sys.exit(1)
+head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=Path(root)/"project",
+                      capture_output=True, text=True, check=True).stdout.strip()
+print(f"active={active} project_head={head[:12]}")
+PY
+}
+
 mapfile -t TASKS < <(pydantic_task_ids)
 echo "=== Running ${#TASKS[@]} task(s) ==="
 
@@ -23,6 +57,11 @@ for iid in "${TASKS[@]}"; do
         failures+=("compile:${iid}")
         continue
     fi
+    if ! verify_task_state "${iid}"; then
+        failures+=("task_state:${iid}")
+        continue
+    fi
+    echo "  OK: task state after compile"
 
     echo "--- benchmark ---"
     if ! ./benchmark "${iid}"; then
@@ -49,7 +88,7 @@ expected_digest = defn["target"]["digest"]
 
 robust = json.loads((hub / "artemis_results_robust.json").read_text())
 tests = json.loads((hub / "tests_artemis_results.json").read_text())
-numeric = hub / "artemis_results.json"
+numeric = json.loads((hub / "artemis_results.json").read_text())
 
 errors = []
 if robust.get("instance_id") != iid:
@@ -59,12 +98,17 @@ if got != expected_digest:
     errors.append(f"digest {got} != {expected_digest}")
 if tests.get("instance_id") != iid:
     errors.append(f"tests instance_id={tests.get('instance_id')!r}")
-if not numeric.is_file():
-    errors.append("missing artemis_results.json")
+if not numeric:
+    errors.append("empty artemis_results.json")
 
 code_changes = (robust.get("patch") or {}).get("code_changes", True)
 if code_changes and tests.get("test_passed") is not True:
     errors.append(f"test_passed={tests.get('test_passed')!r}")
+
+if numeric.get("tests_passed") != 1:
+    errors.append("numeric tests_passed != 1")
+if "runtime_s_baseline" not in numeric:
+    errors.append("numeric missing runtime_s_baseline")
 
 run_id = f"benchmark-{iid}"
 logs = list((hub / "logs" / "run_evaluation").rglob(f"*{run_id}*.report.json"))

@@ -160,7 +160,7 @@ assert ta.json_schema(mode='serialization') == {'type': 'string'}
 
 #### Generics
 
-You can use type variables within `Annotated` to make re-usable modifications to types:
+You can use type variables within `Annotated` to make reusable modifications to types:
 
 ```python
 from typing import Any, List, Sequence, TypeVar
@@ -377,7 +377,7 @@ except ValidationError as exc:
     """
 ```
 
-### Customizing validation with `__get_pydantic_core_schema__`
+### Customizing validation with `__get_pydantic_core_schema__` <a name="customizing_validation_with_get_pydantic_core_schema"></a>
 
 To do more extensive customization of how Pydantic handles custom classes, and in particular when you have access to the
 class or can subclass it, you can implement a special `__get_pydantic_core_schema__` to tell Pydantic how to generate the
@@ -731,7 +731,7 @@ class Owner(Generic[ItemType]):
                         lambda data: Owner(
                             name=data['name'], item=data['item']
                         ),
-                        # note that we re-use the same schema here as below
+                        # note that we reuse the same schema here as below
                         python_schema,
                     ),
                 ]

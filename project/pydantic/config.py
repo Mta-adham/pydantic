@@ -1,15 +1,19 @@
 """Configuration for Pydantic models."""
+
 from __future__ import annotations as _annotations
 
+from re import Pattern
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Type, TypeVar, Union
 
 from typing_extensions import Literal, TypeAlias, TypedDict
 
 from ._migration import getattr_migration
 from .aliases import AliasGenerator
+from .errors import PydanticUserError
 
 if TYPE_CHECKING:
     from ._internal._generate_schema import GenerateSchema as _GenerateSchema
+    from .fields import ComputedFieldInfo, FieldInfo
 
 __all__ = ('ConfigDict', 'with_config')
 
@@ -33,11 +37,18 @@ class ConfigDict(TypedDict, total=False):
     title: str | None
     """The title for the generated JSON schema, defaults to the model's name"""
 
+    model_title_generator: Callable[[type], str] | None
+    """A callable that takes a model class and returns the title for it. Defaults to `None`."""
+
+    field_title_generator: Callable[[str, FieldInfo | ComputedFieldInfo], str] | None
+    """A callable that takes a field's name and info and returns title for it. Defaults to `None`."""
+
     str_to_lower: bool
     """Whether to convert all characters to lowercase for str types. Defaults to `False`."""
 
     str_to_upper: bool
     """Whether to convert all characters to uppercase for str types. Defaults to `False`."""
+
     str_strip_whitespace: bool
     """Whether to strip leading and trailing whitespace for str types."""
 
@@ -383,7 +394,7 @@ class ConfigDict(TypedDict, total=False):
     """
 
     allow_inf_nan: bool
-    """Whether to allow infinity (`+inf` an `-inf`) and NaN values to float fields. Defaults to `True`."""
+    """Whether to allow infinity (`+inf` an `-inf`) and NaN values to float and decimal fields. Defaults to `True`."""
 
     json_schema_extra: JsonDict | JsonSchemaExtraCallable | None
     """A dict or callable to provide extra JSON schema properties. Defaults to `None`."""
@@ -562,22 +573,33 @@ class ConfigDict(TypedDict, total=False):
     - `'float'` will serialize timedeltas to the total number of seconds.
     """
 
-    ser_json_bytes: Literal['utf8', 'base64']
+    ser_json_bytes: Literal['utf8', 'base64', 'hex']
     """
-    The encoding of JSON serialized bytes. Accepts the string values of `'utf8'` and `'base64'`.
-    Defaults to `'utf8'`.
+    The encoding of JSON serialized bytes. Defaults to `'utf8'`.
+    Set equal to `val_json_bytes` to get back an equal value after serialization round trip.
 
     - `'utf8'` will serialize bytes to UTF-8 strings.
     - `'base64'` will serialize bytes to URL safe base64 strings.
+    - `'hex'` will serialize bytes to hexadecimal strings.
     """
 
-    ser_json_inf_nan: Literal['null', 'constants']
+    val_json_bytes: Literal['utf8', 'base64', 'hex']
     """
-    The encoding of JSON serialized infinity and NaN float values. Accepts the string values of `'null'` and `'constants'`.
-    Defaults to `'null'`.
+    The encoding of JSON serialized bytes to decode. Defaults to `'utf8'`.
+    Set equal to `ser_json_bytes` to get back an equal value after serialization round trip.
+
+    - `'utf8'` will deserialize UTF-8 strings to bytes.
+    - `'base64'` will deserialize URL safe base64 strings to bytes.
+    - `'hex'` will deserialize hexadecimal strings to bytes.
+    """
+
+    ser_json_inf_nan: Literal['null', 'constants', 'strings']
+    """
+    The encoding of JSON serialized infinity and NaN float values. Defaults to `'null'`.
 
     - `'null'` will serialize infinity and NaN values as `null`.
     - `'constants'` will serialize infinity and NaN values as `Infinity` and `NaN`.
+    - `'strings'` will serialize infinity as string `"Infinity"` and NaN as string `"NaN"`.
     """
 
     # whether to validate default values during validation, default False
@@ -587,13 +609,22 @@ class ConfigDict(TypedDict, total=False):
     validate_return: bool
     """whether to validate the return value from call validators. Defaults to `False`."""
 
-    protected_namespaces: tuple[str, ...]
+    protected_namespaces: tuple[str | Pattern[str], ...]
     """
-    A `tuple` of strings that prevent model to have field which conflict with them.
-    Defaults to `('model_', )`).
+    A `tuple` of strings and/or patterns that prevent models from having fields with names that conflict with them.
+    For strings, we match on a prefix basis. Ex, if 'dog' is in the protected namespace, 'dog_name' will be protected.
+    For patterns, we match on the entire field name. Ex, if `re.compile(r'^dog$')` is in the protected namespace, 'dog' will be protected, but 'dog_name' will not be.
+    Defaults to `('model_validate', 'model_dump')`).
 
-    Pydantic prevents collisions between model attributes and `BaseModel`'s own methods by
-    namespacing them with the prefix `model_`.
+    The reason we've selected these is to prevent collisions with other validation / dumping formats
+    in the future - ex, model_validate_{some_newly_supported_format}.
+
+    Before v2.10, Pydantic used `('model_',)` as the default value for this setting to
+    prevent collisions between model attributes and `BaseModel`'s own methods. This was changed
+    in v2.10 given feedback that this restriction was limiting in AI and data science contexts,
+    where it is common to have fields with names like `model_id`, `model_input`, `model_output`, etc.
+
+    For more details, see https://github.com/pydantic/pydantic/issues/10315.
 
     ```py
     import warnings
@@ -605,42 +636,51 @@ class ConfigDict(TypedDict, total=False):
     try:
 
         class Model(BaseModel):
-            model_prefixed_field: str
+            model_dump_something: str
 
     except UserWarning as e:
         print(e)
         '''
-        Field "model_prefixed_field" has conflict with protected namespace "model_".
+        Field "model_dump_something" in Model has conflict with protected namespace "model_dump".
 
-        You may be able to resolve this warning by setting `model_config['protected_namespaces'] = ()`.
+        You may be able to resolve this warning by setting `model_config['protected_namespaces'] = ('model_validate',)`.
         '''
     ```
 
     You can customize this behavior using the `protected_namespaces` setting:
 
-    ```py
+    ```py test="skip"
+    import re
     import warnings
 
     from pydantic import BaseModel, ConfigDict
 
-    warnings.filterwarnings('error')  # Raise warnings as errors
-
-    try:
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter('always')  # Catch all warnings
 
         class Model(BaseModel):
-            model_prefixed_field: str
+            safe_field: str
             also_protect_field: str
+            protect_this: str
 
             model_config = ConfigDict(
-                protected_namespaces=('protect_me_', 'also_protect_')
+                protected_namespaces=(
+                    'protect_me_',
+                    'also_protect_',
+                    re.compile('^protect_this$'),
+                )
             )
 
-    except UserWarning as e:
-        print(e)
+    for warning in caught_warnings:
+        print(f'{warning.message}\n')
         '''
-        Field "also_protect_field" has conflict with protected namespace "also_protect_".
+        Field "also_protect_field" in Model has conflict with protected namespace "also_protect_".
 
-        You may be able to resolve this warning by setting `model_config['protected_namespaces'] = ('protect_me_',)`.
+        You may be able to resolve this warning by setting `model_config['protected_namespaces'] = ('protect_me_', re.compile('^protect_this$'))`.
+
+        Field "protect_this" in Model has conflict with protected namespace "re.compile('^protect_this$')".
+
+        You may be able to resolve this warning by setting `model_config['protected_namespaces'] = ('protect_me_', 'also_protect_')`.
         '''
     ```
 
@@ -648,12 +688,14 @@ class ConfigDict(TypedDict, total=False):
     an error _is_ raised if there is an actual collision with an existing attribute:
 
     ```py
-    from pydantic import BaseModel
+    from pydantic import BaseModel, ConfigDict
 
     try:
 
         class Model(BaseModel):
             model_validate: str
+
+            model_config = ConfigDict(protected_namespaces=('model_',))
 
     except NameError as e:
         print(e)
@@ -709,27 +751,24 @@ class ConfigDict(TypedDict, total=False):
 
     defer_build: bool
     """
-    Whether to defer model validator and serializer construction until the first model validation.
+    Whether to defer model validator and serializer construction until the first model validation. Defaults to False.
 
     This can be useful to avoid the overhead of building models which are only
     used nested within other models, or when you want to manually define type namespace via
-    [`Model.model_rebuild(_types_namespace=...)`][pydantic.BaseModel.model_rebuild]. Defaults to False.
+    [`Model.model_rebuild(_types_namespace=...)`][pydantic.BaseModel.model_rebuild].
     """
 
     plugin_settings: dict[str, object] | None
-    """A `dict` of settings for plugins. Defaults to `None`.
-
-    See [Pydantic Plugins](../concepts/plugins.md) for details.
-    """
+    """A `dict` of settings for plugins. Defaults to `None`."""
 
     schema_generator: type[_GenerateSchema] | None
     """
-    A custom core schema generator class to use when generating JSON schemas.
-    Useful if you want to change the way types are validated across an entire model/schema. Defaults to `None`.
+    !!! warning
+        `schema_generator` is deprecated in v2.10.
 
-    The `GenerateSchema` interface is subject to change, currently only the `string_schema` method is public.
-
-    See [#6737](https://github.com/pydantic/pydantic/pull/6737) for details.
+        Prior to v2.10, this setting was advertised as highly subject to change.
+        It's possible that this interface may once again become public once the internal core schema generation
+        API is more stable, but that will likely come after significant performance improvements have been made.
     """
 
     json_schema_serialization_defaults_required: bool
@@ -874,6 +913,10 @@ class ConfigDict(TypedDict, total=False):
     - `python-re` use the [`re`](https://docs.python.org/3/library/re.html) module,
       which supports all regex features, but may be slower.
 
+    !!! note
+        If you use a compiled regex pattern, the python-re engine will be used regardless of this setting.
+        This is so that flags such as `re.IGNORECASE` are respected.
+
     ```py
     from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -913,6 +956,8 @@ class ConfigDict(TypedDict, total=False):
     Whether docstrings of attributes (bare string literals immediately following the attribute declaration)
     should be used for field descriptions. Defaults to `False`.
 
+    Available in Pydantic v2.7+.
+
     ```py
     from pydantic import BaseModel, ConfigDict, Field
 
@@ -944,12 +989,31 @@ class ConfigDict(TypedDict, total=False):
         can be different depending on the Python version used.
     '''
 
+    cache_strings: bool | Literal['all', 'keys', 'none']
+    """
+    Whether to cache strings to avoid constructing new Python objects. Defaults to True.
+
+    Enabling this setting should significantly improve validation performance while increasing memory usage slightly.
+
+    - `True` or `'all'` (the default): cache all strings
+    - `'keys'`: cache only dictionary keys
+    - `False` or `'none'`: no caching
+
+    !!! note
+        `True` or `'all'` is required to cache strings during general validation because
+        validators don't know if they're in a key or a value.
+
+    !!! tip
+        If repeated strings are rare, it's recommended to use `'keys'` or `'none'` to reduce memory usage,
+        as the performance difference is minimal if repeated strings are rare.
+    """
+
 
 _TypeT = TypeVar('_TypeT', bound=type)
 
 
 def with_config(config: ConfigDict) -> Callable[[_TypeT], _TypeT]:
-    """Usage docs: https://docs.pydantic.dev/2.7/concepts/config/#configuration-with-dataclass-from-the-standard-library-or-typeddict
+    """Usage docs: https://docs.pydantic.dev/2.10/concepts/config/#configuration-with-dataclass-from-the-standard-library-or-typeddict
 
     A convenience decorator to set a [Pydantic configuration](config.md) on a `TypedDict` or a `dataclass` from the standard library.
 
@@ -974,9 +1038,19 @@ def with_config(config: ConfigDict) -> Callable[[_TypeT], _TypeT]:
         ```
     """
 
-    def inner(TypedDictClass: _TypeT, /) -> _TypeT:
-        TypedDictClass.__pydantic_config__ = config
-        return TypedDictClass
+    def inner(class_: _TypeT, /) -> _TypeT:
+        # Ideally, we would check for `class_` to either be a `TypedDict` or a stdlib dataclass.
+        # However, the `@with_config` decorator can be applied *after* `@dataclass`. To avoid
+        # common mistakes, we at least check for `class_` to not be a Pydantic model.
+        from ._internal._utils import is_model_class
+
+        if is_model_class(class_):
+            raise PydanticUserError(
+                f'Cannot use `with_config` on {class_.__name__} as it is a Pydantic model',
+                code='with-config-on-model',
+            )
+        class_.__pydantic_config__ = config
+        return class_
 
     return inner
 

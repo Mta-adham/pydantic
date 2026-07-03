@@ -31,7 +31,8 @@ _build/
 /codecov.sh
 /coverage.lcov
 .coverage
-test.py
+/test*.py
+run_mypy_on_file.py
 
 # Documentation files
 /docs/changelog.md
@@ -51,4 +52,3 @@ pydantic/*.so
 .auto-format
 /sandbox/
 /worktrees/
-.pdm-python

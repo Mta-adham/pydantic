@@ -4,15 +4,15 @@ from collections import namedtuple
 from typing import Callable, ClassVar, ForwardRef, NamedTuple
 
 import pytest
-from typing_extensions import Literal, get_origin
+from typing_extensions import Annotated, Literal, get_origin
 
 from pydantic import BaseModel, Field  # noqa: F401
 from pydantic._internal._typing_extra import (
     NoneType,
-    eval_type_lenient,
+    eval_type,
     get_function_type_hints,
-    is_classvar,
-    is_literal_type,
+    is_classvar_annotation,
+    is_literal,
     is_namedtuple,
     is_none_type,
     origin_is_union,
@@ -64,7 +64,7 @@ def test_is_none_type():
     'union',
     [
         typing.Union[int, str],
-        eval_type_lenient('int | str'),
+        eval_type('int | str'),
         *([int | str] if sys.version_info >= (3, 10) else []),
     ],
 )
@@ -76,19 +76,19 @@ def test_is_union(union):
 def test_is_literal_with_typing_extension_literal():
     from typing_extensions import Literal
 
-    assert is_literal_type(Literal) is False
-    assert is_literal_type(Literal['foo']) is True
+    assert is_literal(Literal) is False
+    assert is_literal(Literal['foo']) is True
 
 
 def test_is_literal_with_typing_literal():
     from typing import Literal
 
-    assert is_literal_type(Literal) is False
-    assert is_literal_type(Literal['foo']) is True
+    assert is_literal(Literal) is False
+    assert is_literal(Literal['foo']) is True
 
 
 @pytest.mark.parametrize(
-    'ann_type,extepcted',
+    ['ann_type', 'extepcted'],
     (
         (None, False),
         (ForwardRef('Other[int]'), False),
@@ -96,11 +96,15 @@ def test_is_literal_with_typing_literal():
         (ForwardRef('ClassVar[int]'), True),
         (ForwardRef('t.ClassVar[int]'), True),
         (ForwardRef('typing.ClassVar[int]'), True),
+        (ForwardRef('Annotated[ClassVar[int], ...]'), True),
+        (ForwardRef('Annotated[t.ClassVar[int], ...]'), True),
+        (ForwardRef('t.Annotated[t.ClassVar[int], ...]'), True),
         (ClassVar[int], True),
+        (Annotated[ClassVar[int], ...], True),
     ),
 )
-def test_is_classvar(ann_type, extepcted):
-    assert is_classvar(ann_type) is extepcted
+def test_is_classvar_annotation(ann_type, extepcted):
+    assert is_classvar_annotation(ann_type) is extepcted
 
 
 def test_parent_frame_namespace(mocker):
@@ -111,6 +115,7 @@ def test_parent_frame_namespace(mocker):
     @dataclass
     class MockedFrame:
         f_back = None
+        f_locals = {}
 
     mocker.patch('sys._getframe', return_value=MockedFrame())
     assert parent_frame_namespace() is None
@@ -133,11 +138,41 @@ def test_eval_type_backport_not_installed():
                 foo: 'int | str'
 
         assert str(exc_info.value) == (
-            "You have a type annotation 'int | str' which makes use of newer typing "
-            'features than are supported in your version of Python. To handle this error, '
-            'you should either remove the use of new syntax or install the '
-            '`eval_type_backport` package.'
+            "Unable to evaluate type annotation 'int | str'. If you are making use "
+            'of the new typing syntax (unions using `|` since Python 3.10 or builtins subscripting '
+            'since Python 3.9), you should either replace the use of new syntax with the existing '
+            '`typing` constructs or install the `eval_type_backport` package.'
         )
 
     finally:
         del sys.modules['eval_type_backport']
+
+
+def test_func_ns_excludes_default_globals() -> None:
+    foo = 'foo'
+
+    func_ns = parent_frame_namespace(parent_depth=1)
+    assert func_ns is not None
+    assert func_ns['foo'] == foo
+
+    # there are more default global variables, but these are examples of well known ones
+    for default_global_var in ['__name__', '__doc__', '__package__', '__builtins__']:
+        assert default_global_var not in func_ns
+
+
+module_foo = 'global_foo'
+module_ns = parent_frame_namespace(parent_depth=1)
+
+
+def test_module_ns_is_none() -> None:
+    """Module namespace should be none because we skip fetching data from the top module level."""
+    assert module_ns is None
+
+
+def test_exotic_localns() -> None:
+    __foo_annotation__ = str
+
+    class Model(BaseModel):
+        foo: __foo_annotation__
+
+    assert Model.model_fields['foo'].annotation == str

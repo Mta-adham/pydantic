@@ -212,6 +212,16 @@ print(my_model.model_dump_json())  # (3)!
 2. Using [`model_dump`][pydantic.main.BaseModel.model_dump] with `mode='json'`, `x` is serialized as a `string`, and `y` is serialized as a `float` because of the custom serializer applied.
 3. Using [`model_dump_json`][pydantic.main.BaseModel.model_dump_json], `x` is serialized as a `string`, and `y` is serialized as a `float` because of the custom serializer applied.
 
+### [`complex`][]
+
+* Validation: Pydantic supports `complex` types or `str` values that can be converted to a `complex` type.
+* Serialization: Pydantic serializes [`complex`][] types as strings.
+
+### [`fractions.Fraction`][fractions.Fraction]
+
+* Validation: Pydantic attempts to convert the value to a `Fraction` using `Fraction(v)`.
+* Serialization: Pydantic serializes [`Fraction`][fractions.Fraction] types as strings.
+
 ## [`Enum`][enum.Enum]
 
 Pydantic uses Python's standard [`enum`][] classes to define choices.
@@ -889,8 +899,11 @@ Allows only `None` value.
 
 ## Strings
 
-`str`: Strings are accepted as-is. `bytes` and `bytearray` are converted using `v.decode()`.
-Enum`s inheriting from `str` are converted using `v.value`. All other types cause an error.
+- [`str`][]: Strings are accepted as-is.
+- [`bytes`][] and [`bytearray`][] are converted using the [`decode()`][bytes.decode] method.
+- Enums inheriting from [`str`][] are converted using the [`value`][enum.Enum.value] attribute.
+
+All other types cause an error.
 <!-- * TODO: add note about optional number to string conversion from lig's PR -->
 
 !!! warning "Strings aren't Sequences"
@@ -977,7 +990,7 @@ except ValidationError as e:
 One benefit of this field type is that it can be used to check for equality with one or more specific values
 without needing to declare custom validators:
 
-```py requires="3.8"
+```py
 from typing import ClassVar, List, Literal, Union
 
 from pydantic import BaseModel, ValidationError
@@ -1016,7 +1029,7 @@ except ValidationError as e:
 
 With proper ordering in an annotated `Union`, you can use this to parse types of decreasing specificity:
 
-```py requires="3.8"
+```py
 from typing import Literal, Optional, Union
 
 from pydantic import BaseModel
@@ -1057,10 +1070,14 @@ print(type(Meal(dessert={'kind': 'cake'}).dessert).__name__)
 
 Allows any value, including `None`.
 
+## [`typing.Hashable`][]
+
+* From Python, supports any data that passes an `isinstance(v, Hashable)` check.
+* From JSON, first loads the data via an `Any` validator, then checks if the data is hashable with `isinstance(v, Hashable)`.
 
 ## [`typing.Annotated`][]
 
-Allows wrapping another type with arbitrary metadata, as per [PEP-593](https://www.python.org/dev/peps/pep-0593/). The `Annotated` hint may contain a single call to the [`Field` function](../concepts/json_schema.md#typingannotated-fields), but otherwise the additional metadata is ignored and the root type is used.
+Allows wrapping another type with arbitrary metadata, as per [PEP-593](https://www.python.org/dev/peps/pep-0593/). The `Annotated` hint may contain a single call to the [`Field` function](../concepts/types.md#composing-types-via-annotated), but otherwise the additional metadata is ignored and the root type is used.
 
 
 ## [`typing.Pattern`][]

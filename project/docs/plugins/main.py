@@ -10,6 +10,7 @@ from textwrap import indent
 
 import autoflake
 import pyupgrade._main as pyupgrade_main  # type: ignore
+import requests
 import tomli
 import yaml
 from jinja2 import Template  # type: ignore
@@ -17,20 +18,51 @@ from mkdocs.config import Config
 from mkdocs.structure.files import Files
 from mkdocs.structure.pages import Page
 
-from .conversion_table import conversion_table
-
 logger = logging.getLogger('mkdocs.plugin')
 THIS_DIR = Path(__file__).parent
 DOCS_DIR = THIS_DIR.parent
 PROJECT_ROOT = DOCS_DIR.parent
 
 
+try:
+    from .conversion_table import conversion_table
+except ImportError:
+    # Due to how MkDocs requires this file to be specified (as a path and not a
+    # dot-separated module name), relative imports don't work:
+    # MkDocs is adding the dir. of this file to `sys.path` and uses
+    # `importlib.spec_from_file_location` and `module_from_spec`, which isn't ideal.
+    from conversion_table import conversion_table
+
+# Start definition of MkDocs hooks
+
+
 def on_pre_build(config: Config) -> None:
     """
     Before the build starts.
     """
+    import mkdocs_redirects.plugin
+
     add_changelog()
     add_mkdocs_run_deps()
+
+    # work around for very unfortunate bug in mkdocs-redirects:
+    # https://github.com/mkdocs/mkdocs-redirects/issues/65
+    mkdocs_redirects.plugin.HTML_TEMPLATE = """
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Redirecting...</title>
+    <link rel="canonical" href="{url}">
+    <!-- remove problematic tag here -->
+    <script>var anchor=window.location.hash.substr(1);location.href="{url}"+(anchor?"#"+anchor:"")</script>
+    <meta http-equiv="refresh" content="0; url={url}">
+</head>
+<body>
+Redirecting...
+</body>
+</html>
+"""
 
 
 def on_files(files: Files, config: Config) -> Files:
@@ -51,6 +83,8 @@ def on_page_markdown(markdown: str, page: Page, config: Config, files: Files) ->
         return md
     if md := render_why(markdown, page):
         return md
+    if md := render_pydantic_settings(markdown, page):
+        return md
     elif md := build_schema_mappings(markdown, page):
         return md
     elif md := build_conversion_table(markdown, page):
@@ -61,6 +95,9 @@ def on_page_markdown(markdown: str, page: Page, config: Config, files: Files) ->
         return md
     else:
         return markdown
+
+
+# End definition of MkDocs hooks
 
 
 def add_changelog() -> None:
@@ -76,14 +113,30 @@ def add_changelog() -> None:
 
 
 def add_mkdocs_run_deps() -> None:
-    # set the pydantic and pydantic-core versions to configure for running examples in the browser
+    # set the pydantic, pydantic-core, pydantic-extra-types versions to configure for running examples in the browser
     pyproject_toml = (PROJECT_ROOT / 'pyproject.toml').read_text()
-    pydantic_core_version = re.search(r'pydantic-core==(.+?)["\']', pyproject_toml).group(1)
+    m = re.search(r'pydantic-core==(.+?)["\']', pyproject_toml)
+    if not m:
+        logger.info(
+            "Could not find pydantic-core version in pyproject.toml, this is expected if you're using a git ref"
+        )
+        return
+
+    pydantic_core_version = m.group(1)
 
     version_py = (PROJECT_ROOT / 'pydantic' / 'version.py').read_text()
     pydantic_version = re.search(r'^VERSION ?= (["\'])(.+)\1', version_py, flags=re.M).group(2)
 
-    mkdocs_run_deps = json.dumps([f'pydantic=={pydantic_version}', f'pydantic-core=={pydantic_core_version}'])
+    uv_lock = (PROJECT_ROOT / 'uv.lock').read_text()
+    pydantic_extra_types_version = re.search(r'name = "pydantic-extra-types"\nversion = "(.+?)"', uv_lock).group(1)
+
+    mkdocs_run_deps = json.dumps(
+        [
+            f'pydantic=={pydantic_version}',
+            f'pydantic-core=={pydantic_core_version}',
+            f'pydantic-extra-types=={pydantic_extra_types_version}',
+        ]
+    )
     logger.info('Setting mkdocs_run_deps=%s', mkdocs_run_deps)
 
     html = f"""\
@@ -95,13 +148,13 @@ def add_mkdocs_run_deps() -> None:
     path.write_text(html)
 
 
-MIN_MINOR_VERSION = 7
-MAX_MINOR_VERSION = 11
+MIN_MINOR_VERSION = 8
+MAX_MINOR_VERSION = 12
 
 
 def upgrade_python(markdown: str) -> str:
     """
-    Apply pyupgrade to all python code blocks, unless explicitly skipped, create a tab for each version.
+    Apply pyupgrade to all Python code blocks, unless explicitly skipped, create a tab for each version.
     """
 
     def add_tabs(match: re.Match[str]) -> str:
@@ -137,7 +190,7 @@ def upgrade_python(markdown: str) -> str:
         else:
             return '\n\n'.join(output)
 
-    return re.sub(r'^(``` *py.*?)\n(.+?)^```(\s+(?:^\d+\. .+?\n)+)', add_tabs, markdown, flags=re.M | re.S)
+    return re.sub(r'^(``` *py.*?)\n(.+?)^```(\s+(?:^\d+\. .+?\n)*)', add_tabs, markdown, flags=re.M | re.S)
 
 
 def _upgrade_code(code: str, min_version: int) -> str:
@@ -246,6 +299,22 @@ def render_why(markdown: str, page: Page) -> str | None:
         for org in get_orgs_data()
     ]
     return re.sub(r'{{ *organisations *}}', '\n\n'.join(elements), markdown)
+
+
+def render_pydantic_settings(markdown: str, page: Page) -> str | None:
+    if page.file.src_uri != 'concepts/pydantic_settings.md':
+        return None
+
+    req = requests.get('https://raw.githubusercontent.com/pydantic/pydantic-settings/main/docs/index.md')
+    if req.status_code != 200:
+        logger.warning(
+            'Got HTTP status %d when trying to fetch content of the `pydantic-settings` docs', req.status_code
+        )
+        return
+
+    docs_content = req.text.strip()
+
+    return re.sub(r'{{ *pydantic_settings *}}', docs_content, markdown)
 
 
 def _generate_table_row(col_values: list[str]) -> str:

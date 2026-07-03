@@ -34,8 +34,19 @@ pip install -r requirements.txt
 | `./compile [task]` | Sync `project/` + build `patch.diff` |
 | `./benchmark [task]` | GSO harness perf eval → `artemis_results.json` |
 | `./test [task]` | GSO harness correctness → `tests_artemis_results.json` |
+| `./reset [task]` | Restore `project/` from `baseline/` (discard edits) |
 
 Omit the task ID to use the active task (`.gso_task_id`).
+
+**Maintenance scripts** (`scripts/`):
+
+| Script | What it does |
+|--------|----------------|
+| `bash scripts/run_all_tasks.sh` | Full E2E: all tasks compile → benchmark → test + validation |
+| `bash scripts/images.sh pull-images [task]` | Pull pinned Docker images |
+| `bash scripts/images.sh verify-images [task]` | Verify local images match `benchmark.yaml` digests |
+| `bash scripts/images.sh pin-images [task]` | Update digest in `benchmark.yaml` after image rebuild |
+| `source scripts/setup.sh` | Create `.venv` and install dependencies |
 
 **Results (repo root):**
 
