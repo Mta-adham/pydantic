@@ -59,60 +59,46 @@ Omit the task ID to use the active task (`.gso_task_id`).
 
 ## `artemis_results.json` encodings
 
-`artemis_results.json` is a single flat object: every value is a number. Keys use
-underscore prefixes (`vs_baseline_…`, `per_test_0_…`, `timings_baseline_times_0_1`, …).
-String fields from the robust report (headlines, `comparison` text, etc.) are omitted.
+`artemis_results.json` is a single flat object of headline metrics only (every value
+is a number). Human-readable detail (including per-test counts in headlines) is in
+`summary.txt`; `artemis_results_robust.json` keeps nested labels and explanations.
 
-For readable labels, use `artemis_results_robust.json` or `summary.txt`.
+String task IDs (e.g. `pydantic__pydantic-4a09447`) appear in the robust report and
+`summary.txt`. In `artemis_results.json`, `task` is the numeric index from the
+**Tasks** table below (`0`–`3`).
 
-### Categorical fields
+### Fields
 
-| Key | Type | Values |
-|-----|------|--------|
-| `instance_id` | task index | `0`–`3` — see **Tasks** table (`Index` column) |
-| `run_id` | hash | `sha256(run_id)[:8] % 10000` (e.g. `benchmark-pydantic__pydantic-4a09447` → `3874`) |
-| `model_name` | enum | `0` = `local-edit` |
+| Key | Type | Meaning |
+|-----|------|---------|
+| `task` | index | `0`–`3` — see **Tasks** table |
+| `run_id` | hash | `sha256(run_id)[:8] % 10000` |
 | `recorded_at` | timestamp | Unix epoch seconds (UTC) |
-| `code_changes` | bool | `0` = no real edits (placeholder patch), `1` = real code changes |
+| `code_changes` | bool | `0` = placeholder / no real edits, `1` = real changes |
 | `verdict` | enum | `-1` unavailable · `0` no_change · `1` no_change_near_expert · `2` slower_than_baseline · `3` improved_matches_expert · `4` improved_below_expert · `5` improved |
-| `vs_baseline_direction` | enum | `0` unchanged · `1` faster · `2` slower (also on `per_test_N_vs_baseline_direction`) |
-| `vs_baseline_significant` | bool | `1` = statistically significant vs baseline at 95% |
-| `vs_expert_matches_expert` | bool | `1` = within 95% of expert speed (also on `per_test_N_vs_expert_matches_expert`) |
-| `confidence_ci_includes_no_change` | bool | `1` = 95% CI for speedup ratio includes 1.0 |
-| `confidence_statistically_significant` | bool | `1` = significant vs baseline at 95% |
-| `confidence_within_measurement_noise` | bool | `1` = treated as harness noise, not a real change |
-| `tests_passed` | bool | `1` = harness completed and produced timings |
-| `opt_base_passed` | bool | `1` = ≥20% faster than baseline (GSO `opt_base`) |
-| `opt_commit_passed` | bool | `1` = ≥95% of expert speed (GSO `opt_commit`) |
-| `harness_metrics_opt_base_passed` | bool | same as `opt_base_passed` |
-| `harness_metrics_opt_commit_passed` | bool | same as `opt_commit_passed` |
-
-### Numeric metrics (seconds, ratios, percents)
-
-| Key prefix | Meaning |
-|------------|---------|
-| `runtime_s_baseline` / `_optimized` / `_expert` | Geometric-mean wall time (seconds) |
-| `vs_baseline_speedup` | `baseline_time ÷ optimized_time` (>1 = faster) |
-| `vs_baseline_percent_faster` | `(speedup − 1) × 100` |
-| `vs_baseline_time_saved_s` | `baseline − optimized` (seconds) |
-| `vs_expert_parity_percent` | `expert_time ÷ optimized_time × 100` (100 = tie) |
-| `vs_expert_runtime_ratio` | `optimized_time ÷ expert_time` |
-| `vs_expert_time_delta_s` | `optimized − expert` (seconds) |
-| `confidence_speedup_ratio_*` | Bootstrap estimate / 95% CI for baseline÷optimized speedup |
-| `confidence_tests_faster` / `_total` | Per-test count faster than baseline |
-| `harness_metrics_speedup_vs_baseline_gm` | GSO geometric-mean speedup vs baseline |
-| `harness_metrics_speedup_vs_expert_gm` | GSO geometric-mean speedup vs expert |
-| `harness_metrics_speedup_expert_vs_baseline_gm` | Expert speedup vs baseline |
-| `per_test_N_*` | Same metrics for perf test index `N` |
-| `timings_baseline_times_N_M` | Raw sample `M` for test `N` (seconds); same for `_optimized_` / `_expert_` |
-| `harness_metrics_per_test_speedups_*` | Per-test speedup arrays from the grader |
+| `runtime_s_baseline` / `_optimized` / `_expert` | seconds | Geometric-mean wall time |
+| `vs_baseline_speedup` | ratio | `baseline ÷ optimized` (>1 = faster) |
+| `vs_baseline_percent_faster` | percent | `(speedup − 1) × 100` |
+| `vs_baseline_direction` | enum | `0` unchanged · `1` faster · `2` slower |
+| `vs_baseline_significant` | bool | `1` = significant vs baseline at 95% |
+| `vs_expert_parity_percent` | percent | `expert ÷ optimized × 100` (100 = tie) |
+| `vs_expert_runtime_ratio` | ratio | `optimized ÷ expert` |
+| `vs_expert_matches_expert` | bool | `1` = within 95% of expert speed |
+| `confidence_speedup_ratio_estimate` | ratio | Bootstrap speedup estimate |
+| `confidence_speedup_ratio_ci_95_low` / `_high` | ratio | 95% CI for speedup vs baseline |
+| `confidence_statistically_significant` | bool | `1` = significant vs baseline |
+| `confidence_ci_includes_no_change` | bool | `1` = CI includes 1.0 (no clear change) |
+| `confidence_within_measurement_noise` | bool | `1` = likely harness noise |
+| `tests_passed` | bool | `1` = harness produced timings |
+| `opt_base_passed` | bool | `1` = ≥20% faster than baseline |
+| `opt_commit_passed` | bool | `1` = ≥95% of expert speed |
 
 If the harness run fails or is incomplete, only metadata / bool flags are written;
 timing and speedup keys are absent (`verdict: -1`).
 
 ## Tasks
 
-Index order matches `instance_id` in `artemis_results.json` (sorted `benchmarks/*/`
+Index order matches `task` in `artemis_results.json` (sorted `benchmarks/*/`
 slug). String task IDs appear in `artemis_results_robust.json` and `summary.txt`.
 
 | Index | Task ID | API | File(s) to optimize |

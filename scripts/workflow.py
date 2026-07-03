@@ -767,6 +767,34 @@ def docker_image_name(instance) -> str:
     )
 
 
+def cleanup_stale_harness_containers(instance_id: str) -> None:
+    """Remove leftover GSO eval containers that block re-runs for this task."""
+    proc = subprocess.run(
+        [
+            "docker",
+            "ps",
+            "-aq",
+            "--filter",
+            f"name=gso.eval.{instance_id}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    for cid in proc.stdout.splitlines():
+        cid = cid.strip()
+        if not cid:
+            continue
+        rm = subprocess.run(
+            ["docker", "rm", "-f", cid],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if rm.returncode == 0:
+            print(f"Removed stale harness container: {cid[:12]}")
+
+
 def remove_docker_image(image: str) -> None:
     proc = subprocess.run(
         ["docker", "rmi", "-f", image],
@@ -1049,6 +1077,32 @@ def load_instance_report(
     )
 
 
+def tag_instance_image_for_harness(instance) -> None:
+    """Retag the pulled slimshetty image as local gso.eval...:latest for the harness."""
+    remote = instance.remote_instance_image_key
+    local = instance.instance_image_key
+    proc = subprocess.run(
+        ["docker", "image", "inspect", remote],
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise SystemExit(
+            f"Docker image not found: {remote}\n"
+            "Run: bash scripts/images.sh pull-images"
+        )
+    tag_proc = subprocess.run(
+        ["docker", "tag", remote, local],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if tag_proc.returncode != 0:
+        raise SystemExit(
+            f"Could not tag {remote} as {local}: {tag_proc.stderr.strip()}"
+        )
+
+
 def run_harness(
     instance_id: str,
     *,
@@ -1059,13 +1113,12 @@ def run_harness(
     pull_image: bool = True,
     ephemeral_image: bool = True,
     action: str = "benchmark",
-    clean_logs: bool = True,
 ) -> str:
     instance = load_instance(instance_id)
     require_active_task(instance_id, action=action)
     run_id = run_id or f"local-{instance_id}"
-    if clean_logs:
-        clean_harness_instance_logs(instance_id, run_id, model_name)
+    clean_harness_instance_logs(instance_id, run_id, model_name)
+    cleanup_stale_harness_containers(instance_id)
     pred_path = predictions_path(instance_id)
     if not pred_path.exists():
         raise SystemExit(
@@ -1077,6 +1130,7 @@ def run_harness(
         verify_instance_image(instance.instance_id, pull=True)
     else:
         verify_instance_image(instance_id, pull=False)
+    tag_instance_image_for_harness(instance)
 
     harness_args = [
         "--dataset_name",
@@ -1219,32 +1273,78 @@ def _confidence_interpretation(
     ci_high: float | None,
     *,
     includes_no_change: bool | None,
+    measured_speedup: float | None = None,
+    baseline_s: float | None = None,
+    optimized_s: float | None = None,
 ) -> str | None:
     if estimate is None or ci_low is None or ci_high is None:
         return None
-    pct = _percent_faster(estimate)
+
+    measured_pct = _percent_faster(measured_speedup)
+    bootstrap_pct = _percent_faster(estimate)
+    pct = measured_pct if measured_pct is not None else bootstrap_pct
     if pct is None:
         return None
 
+    time_saved_s = (
+        round(baseline_s - optimized_s, 6)
+        if baseline_s is not None and optimized_s is not None
+        else None
+    )
+    speedup = measured_speedup if measured_speedup is not None else estimate
+
     if includes_no_change:
-        if abs(pct) < 0.1:
-            avg = "about the same speed as"
+        if abs(pct) < 0.05:
+            change = "the same speed as"
+            detail = ""
         elif pct > 0:
-            avg = f"about {pct:.1f}% faster than"
+            change = f"{abs(pct):.2f}% faster than"
+            detail = _format_time_delta(time_saved_s, faster=True)
         else:
-            avg = f"about {abs(pct):.1f}% slower than"
+            change = f"{abs(pct):.2f}% slower than"
+            detail = _format_time_delta(time_saved_s, faster=False)
+        ci_lo_pct = _percent_faster(ci_low)
+        ci_hi_pct = _percent_faster(ci_high)
+        ci_part = (
+            f"95% CI for speedup: {ci_low:.3f}×–{ci_high:.3f}×"
+            f" ({ci_lo_pct:+.1f}% to {ci_hi_pct:+.1f}% vs baseline)"
+            if ci_lo_pct is not None and ci_hi_pct is not None
+            else f"95% CI for speedup: {ci_low:.3f}×–{ci_high:.3f}×"
+        )
+        speedup_part = f" ({speedup:.4f}× speedup)" if speedup is not None else ""
+        detail_part = f" — {detail}" if detail else ""
         return (
-            f"Optimized is {avg} baseline, but timings bounce around enough between "
-            "runs that we can't tell if that's real — likely just measurement noise."
+            f"Optimized is {change} baseline{detail_part}{speedup_part}. "
+            f"{ci_part} includes no change — likely measurement noise."
         )
     if estimate > 1.0:
+        detail = _format_time_delta(time_saved_s, faster=True)
+        detail_part = f" ({detail})" if detail else ""
         return (
-            f"Optimized is reliably faster than baseline (about {pct:.1f}% on average)."
+            f"Optimized is reliably faster than baseline "
+            f"(about {pct:.2f}% on average{detail_part})."
         )
+    detail = _format_time_delta(time_saved_s, faster=False)
+    detail_part = f" ({detail})" if detail else ""
     return (
         f"Optimized is reliably slower than baseline "
-        f"(about {abs(pct):.1f}% on average)."
+        f"(about {abs(pct):.2f}% on average{detail_part})."
     )
+
+
+def _format_time_delta(time_saved_s: float | None, *, faster: bool) -> str:
+    if time_saved_s is None:
+        return ""
+    delta = abs(time_saved_s)
+    if delta < 1e-9:
+        return "no measurable time difference"
+    unit = "s"
+    value = delta
+    if delta < 0.001:
+        value = delta * 1_000
+        unit = "ms"
+    label = "faster" if faster else "slower"
+    return f"{value:.3f}{unit} {label} per run"
 
 
 def _slim_confidence(
@@ -1253,6 +1353,9 @@ def _slim_confidence(
     within_noise: bool,
     tests_faster: int,
     tests_total: int,
+    measured_speedup: float | None = None,
+    baseline_s: float | None = None,
+    optimized_s: float | None = None,
 ) -> dict:
     ci = confidence.get("ci_95", {})
     low = ci.get("low")
@@ -1270,7 +1373,13 @@ def _slim_confidence(
             "ci_includes_no_change": includes_no_change,
             "statistically_significant": significant,
             "interpretation": _confidence_interpretation(
-                estimate, low, high, includes_no_change=includes_no_change
+                estimate,
+                low,
+                high,
+                includes_no_change=includes_no_change,
+                measured_speedup=measured_speedup,
+                baseline_s=baseline_s,
+                optimized_s=optimized_s,
             ),
             "within_measurement_noise": within_noise,
             "tests_faster_than_baseline": (
@@ -1568,41 +1677,6 @@ def _improvement_headline(
     )
 
 
-def _export_harness_metrics(instance_report: dict) -> dict:
-    """Slim harness metrics for artemis JSON (no legacy null placeholders)."""
-    o = instance_report.get("opt_stats") or {}
-    metrics: dict = {
-        "opt_base_passed": bool(instance_report.get("opt_base")),
-        "opt_commit_passed": bool(instance_report.get("opt_commit")),
-        "speedup_vs_baseline_gm": o.get("gm_speedup_patch_base"),
-        "speedup_vs_expert_gm": o.get("gm_speedup_patch_commit"),
-        "speedup_expert_vs_baseline_gm": o.get("gm_speedup_commit_base"),
-        "speedup_vs_baseline_gsd": o.get("gsd_speedup_patch_base"),
-        "percent_tests_slower_than_baseline": o.get("slowdown_perc_patch_base"),
-        "per_test_speedups": o.get("per_test_speedups"),
-    }
-    if o.get("gm_speedup_patch_main") is not None:
-        metrics["speedup_vs_main_gm"] = o["gm_speedup_patch_main"]
-    return {
-        k: v
-        for k, v in metrics.items()
-        if v is not None or k in {"opt_base_passed", "opt_commit_passed"}
-    }
-
-
-def _export_timings(instance_report: dict) -> dict:
-    main = instance_report.get("main_times")
-    out = {
-        "unit": "s",
-        "baseline_times": instance_report.get("base_times"),
-        "optimized_times": instance_report.get("patch_times"),
-        "expert_times": instance_report.get("commit_times"),
-    }
-    if main is not None:
-        out["main_times"] = main
-    return out
-
-
 def build_improvement_summary(
     instance_report: dict, *, instance_id: str | None = None
 ) -> dict:
@@ -1627,9 +1701,6 @@ def build_improvement_summary(
 
     patch_meta = _patch_metadata(instance_id) if instance_id else {}
     no_code_changes = not patch_meta.get("code_changes", True)
-    per_test_base = time_stats.get("per_test_means", {}).get("base", []) or []
-    per_test_patch = time_stats.get("per_test_means", {}).get("patch", []) or []
-    per_test_commit = time_stats.get("per_test_means", {}).get("commit", []) or []
     patch_base_speedups = (
         opt_stats.get("per_test_speedups", {}).get("patch_base_speedups", []) or []
     )
@@ -1658,6 +1729,9 @@ def build_improvement_summary(
         within_noise=within_noise,
         tests_faster=tests_faster,
         tests_total=tests_total,
+        measured_speedup=gm_patch_base,
+        baseline_s=base_mean,
+        optimized_s=patch_mean,
     )
     measurement = _measurement_assessment(
         within_noise=within_noise,
@@ -1667,30 +1741,6 @@ def build_improvement_summary(
         pct_faster=pct_faster,
     )
     vs_baseline_sig = False if no_code_changes else significant
-    per_test: list[dict] = []
-    for i, baseline_s in enumerate(per_test_base):
-        optimized_s = per_test_patch[i] if i < len(per_test_patch) else None
-        expert_s = per_test_commit[i] if i < len(per_test_commit) else None
-        speedup = (
-            patch_base_speedups[i]
-            if i < len(patch_base_speedups)
-            else (
-                baseline_s / optimized_s
-                if baseline_s and optimized_s
-                else None
-            )
-        )
-        per_sig = False if no_code_changes else None
-        per_test.append(
-            {
-                "test_index": i,
-                "runtime_s": _slim_runtime_s(baseline_s, optimized_s, expert_s),
-                "vs_baseline": _slim_vs_baseline(
-                    baseline_s, optimized_s, speedup, significant=per_sig
-                ),
-                "vs_expert": _slim_vs_expert(expert_s, optimized_s),
-            }
-        )
 
     return {
         "patch": {
@@ -1718,7 +1768,6 @@ def build_improvement_summary(
                 "opt_commit_passed": instance_report.get("opt_commit"),
             },
         },
-        "per_test": per_test,
     }
 
 
@@ -1737,11 +1786,6 @@ def build_artemis_benchmark_payload(
         "recorded_at": recorded_at,
         "patch": parts["patch"],
         "summary": parts["summary"],
-        "tests": {
-            "per_test": parts["per_test"],
-            "timings": _export_timings(instance_report),
-            "harness_metrics": _export_harness_metrics(instance_report),
-        },
         "harness_report": str(
             instance_report_path(instance_id, run_id, model_name)
         ),
@@ -1761,7 +1805,6 @@ _VERDICT_TO_INT = {
     "improved": 5,
 }
 _DIRECTION_TO_INT = {"unchanged": 0, "faster": 1, "slower": 2}
-_MODEL_NAME_TO_INT = {"local-edit": 0}
 
 
 def _task_index(instance_id: str) -> int:
@@ -1786,58 +1829,16 @@ def _bool_num(value: Any) -> int:
     return int(bool(value))
 
 
-def _numericize_comparison_block(block: dict | None) -> dict:
-    if not block:
-        return {}
-    out: dict[str, int | float] = {}
-    for key, value in block.items():
-        if key == "direction":
-            out[key] = _DIRECTION_TO_INT.get(str(value), 0)
-        elif isinstance(value, bool):
-            out[key] = _bool_num(value)
-        elif isinstance(value, (int, float)):
-            out[key] = value
-    return out
-
-
 def _numericize_confidence(confidence: dict | None) -> dict:
     if not confidence:
         return {}
     out: dict[str, int | float] = {}
     for key, value in confidence.items():
-        if key in {"interpretation", "compared_to"}:
-            continue
-        if key == "tests_faster_than_baseline" and isinstance(value, str):
-            if "/" in value:
-                faster, total = value.split("/", 1)
-                out["tests_faster"] = int(faster)
-                out["tests_total"] = int(total)
+        if key in {"interpretation", "compared_to", "tests_faster_than_baseline"}:
             continue
         if isinstance(value, bool):
             out[key] = _bool_num(value)
         elif isinstance(value, (int, float)):
-            out[key] = value
-    return out
-
-
-def _numericize_timings(timings: dict) -> dict:
-    return {k: v for k, v in timings.items() if k != "unit"}
-
-
-def _numericize_harness_metrics(metrics: dict) -> dict:
-    out: dict[str, Any] = {}
-    for key, value in metrics.items():
-        if isinstance(value, bool):
-            out[key] = _bool_num(value)
-        elif isinstance(value, (int, float)):
-            out[key] = value
-        elif isinstance(value, dict):
-            out[key] = {
-                sk: sv
-                for sk, sv in value.items()
-                if isinstance(sv, (int, float, list))
-            }
-        else:
             out[key] = value
     return out
 
@@ -1852,71 +1853,79 @@ def _finite_scalar(value: Any) -> int | float | None:
     return None
 
 
-def _flatten_numeric_leaves(obj: Any, prefix: str = "") -> dict[str, int | float]:
-    """Flatten nested numeric data to a single level of finite scalars."""
-    flat: dict[str, int | float] = {}
-    if isinstance(obj, dict):
-        for key, value in obj.items():
-            child_prefix = f"{prefix}_{key}" if prefix else str(key)
-            flat.update(_flatten_numeric_leaves(value, child_prefix))
-        return flat
-    if isinstance(obj, list):
-        for index, value in enumerate(obj):
-            child_prefix = f"{prefix}_{index}"
-            if isinstance(value, (dict, list)):
-                flat.update(_flatten_numeric_leaves(value, child_prefix))
-            else:
-                scalar = _finite_scalar(value)
-                if scalar is not None:
-                    flat[child_prefix] = scalar
-        return flat
-    scalar = _finite_scalar(obj)
-    if scalar is not None and prefix:
-        flat[prefix] = scalar
-    return flat
-
-
 def build_artemis_benchmark_payload_numeric(
     instance_id: str,
     run_id: str,
     model_name: str,
     instance_report: dict,
 ) -> dict[str, int | float]:
-    """Flat Artemis JSON: every value is a top-level finite number."""
+    """Flat Artemis JSON: headline metrics only (no per-test or raw timings)."""
+    del model_name  # single model in this hub; omitted from numeric export
     parts = build_improvement_summary(instance_report, instance_id=instance_id)
     recorded_at = datetime.now(timezone.utc).isoformat()
     summary = parts["summary"]
     patch = parts["patch"]
     harness = summary.get("harness") or {}
-    nested = {
-        "instance_id": _task_index(instance_id),
+    runtime = summary.get("runtime_s") or {}
+    vs_base = summary.get("vs_baseline") or {}
+    vs_expert = summary.get("vs_expert") or {}
+    conf = _numericize_confidence(summary.get("confidence"))
+
+    out: dict[str, int | float] = {
+        "task": _task_index(instance_id),
         "run_id": _run_id_numeric(run_id),
-        "model_name": _MODEL_NAME_TO_INT.get(model_name, 0),
         "recorded_at": _recorded_at_numeric(recorded_at),
         "code_changes": _bool_num(patch.get("code_changes")),
         "verdict": _VERDICT_TO_INT.get(str(summary.get("verdict")), -1),
-        "runtime_s": summary.get("runtime_s") or {},
-        "vs_baseline": _numericize_comparison_block(summary.get("vs_baseline")),
-        "vs_expert": _numericize_comparison_block(summary.get("vs_expert")),
-        "confidence": _numericize_confidence(summary.get("confidence")),
         "tests_passed": _bool_num(harness.get("tests_passed")),
         "opt_base_passed": _bool_num(harness.get("opt_base_passed")),
         "opt_commit_passed": _bool_num(harness.get("opt_commit_passed")),
-        "per_test": [
-            {
-                "test_index": row["test_index"],
-                "runtime_s": row.get("runtime_s") or {},
-                "vs_baseline": _numericize_comparison_block(row.get("vs_baseline")),
-                "vs_expert": _numericize_comparison_block(row.get("vs_expert")),
-            }
-            for row in parts["per_test"]
-        ],
-        "timings": _numericize_timings(_export_timings(instance_report)),
-        "harness_metrics": _numericize_harness_metrics(
-            _export_harness_metrics(instance_report)
-        ),
     }
-    return _flatten_numeric_leaves(nested)
+
+    for key in ("baseline", "optimized", "expert"):
+        value = _finite_scalar(runtime.get(key))
+        if value is not None:
+            out[f"runtime_s_{key}"] = value
+
+    for src_key, dst_key in (
+        ("speedup", "vs_baseline_speedup"),
+        ("percent_faster", "vs_baseline_percent_faster"),
+    ):
+        value = _finite_scalar(vs_base.get(src_key))
+        if value is not None:
+            out[dst_key] = value
+    if vs_base.get("direction") is not None:
+        out["vs_baseline_direction"] = _DIRECTION_TO_INT.get(
+            str(vs_base.get("direction")), 0
+        )
+    if vs_base.get("significant") is not None:
+        out["vs_baseline_significant"] = _bool_num(vs_base.get("significant"))
+
+    for src_key, dst_key in (
+        ("parity_percent", "vs_expert_parity_percent"),
+        ("runtime_ratio", "vs_expert_runtime_ratio"),
+    ):
+        value = _finite_scalar(vs_expert.get(src_key))
+        if value is not None:
+            out[dst_key] = value
+    if vs_expert.get("matches_expert") is not None:
+        out["vs_expert_matches_expert"] = _bool_num(vs_expert.get("matches_expert"))
+
+    for src_key, dst_key in (
+        ("speedup_ratio_estimate", "confidence_speedup_ratio_estimate"),
+        ("speedup_ratio_ci_95_low", "confidence_speedup_ratio_ci_95_low"),
+        ("speedup_ratio_ci_95_high", "confidence_speedup_ratio_ci_95_high"),
+        ("statistically_significant", "confidence_statistically_significant"),
+        ("ci_includes_no_change", "confidence_ci_includes_no_change"),
+        ("within_measurement_noise", "confidence_within_measurement_noise"),
+    ):
+        if src_key not in conf:
+            continue
+        value = conf[src_key]
+        if isinstance(value, (int, float)):
+            out[dst_key] = value
+
+    return out
 
 
 def build_artemis_test_payload(
@@ -2050,7 +2059,6 @@ def test_patch(
     max_workers: int = 1,
     pull_image: bool = True,
     ephemeral_image: bool = True,
-    reuse_report: bool = False,
     from_benchmark: bool = False,
     rerun: bool = False,
 ) -> Path:
@@ -2062,8 +2070,6 @@ def test_patch(
         from_benchmark=from_benchmark,
         rerun=rerun,
     )
-    if reuse_report and harness_report_exists(instance_id, run_id, model_name):
-        needs_run = False
     if needs_run:
         run_harness(
             instance_id,
@@ -2153,11 +2159,6 @@ def main() -> None:
         help="Keep the Docker image after grading (default: remove to save disk)",
     )
     test_cmd.add_argument(
-        "--reuse-report",
-        action="store_true",
-        help="Skip harness when report.json already exists for the chosen run-id",
-    )
-    test_cmd.add_argument(
         "--rerun",
         action="store_true",
         help="Force a fresh test harness run (run-id test-<task>)",
@@ -2209,7 +2210,6 @@ def main() -> None:
             max_workers=args.max_workers,
             pull_image=not args.no_pull,
             ephemeral_image=args.ephemeral_image,
-            reuse_report=args.reuse_report,
             from_benchmark=args.from_benchmark,
             rerun=args.rerun,
         )
