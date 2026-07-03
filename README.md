@@ -24,7 +24,7 @@ pip install -r requirements.txt
 # edit project/pydantic/*.py (see Tasks table)
 ./compile                              # rebuild patch
 ./benchmark                            # GSO harness → artemis_results.json
-./test                                 # separate harness run → tests_artemis_results.json
+./test                                 # tests_artemis_results.json (reuses report if present)
 ```
 
 ## Commands
@@ -33,7 +33,7 @@ pip install -r requirements.txt
 |---------|----------------|
 | `./compile [task]` | Sync `project/` + build `patch.diff` |
 | `./benchmark [task]` | GSO harness perf eval → `artemis_results.json` |
-| `./test [task]` | GSO harness correctness eval → `tests_artemis_results.json` (own run; use `--from-benchmark` to reuse the benchmark report) |
+| `./test [task]` | Correctness → `tests_artemis_results.json` (reuses `test-*` or `benchmark-*` report if present; `--rerun` for a fresh test harness) |
 | `./reset [task]` | Restore `project/` from `baseline/` (discard edits) |
 
 Omit the task ID to use the active task (`.gso_task_id`).

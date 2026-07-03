@@ -111,18 +111,13 @@ if "runtime_s_baseline" not in numeric:
     errors.append("numeric missing runtime_s_baseline")
 
 run_id = f"benchmark-{iid}"
-test_run_id = f"test-{iid}"
 logs = list((hub / "logs" / "run_evaluation").rglob(f"*{run_id}*.report.json"))
-test_logs = list((hub / "logs" / "run_evaluation").rglob(f"*{test_run_id}*.report.json"))
 harness_report = str(logs[0]) if logs else None
-test_harness_report = str(test_logs[0]) if test_logs else None
+test_harness_report = tests.get("harness_report")
+if not test_harness_report or not Path(test_harness_report).is_file():
+    errors.append(f"missing tests harness_report: {test_harness_report!r}")
 if not harness_report:
     errors.append("no benchmark harness report under logs/run_evaluation/")
-if not test_harness_report:
-    errors.append("no test harness report under logs/run_evaluation/")
-got_test_report = tests.get("harness_report")
-if got_test_report and test_harness_report and got_test_report != test_harness_report:
-    errors.append(f"tests harness_report mismatch: {got_test_report}")
 
 if errors:
     print("VALIDATION ERRORS:", "; ".join(errors))

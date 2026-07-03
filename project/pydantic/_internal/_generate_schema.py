@@ -1221,12 +1221,16 @@ class GenerateSchema:
     ) -> _CommonField:
         # Update FieldInfo annotation if appropriate:
         FieldInfo = import_cached_field_info()
-        if has_instance_in_type(field_info.annotation, (ForwardRef, str)):
-            # TODO Can we use field_info.apply_typevars_map here? Shouldn't we use lenient=False?
-            evaluated = _typing_extra.eval_type(field_info.annotation, *self._types_namespace, lenient=True)
-            evaluated = replace_types(evaluated, self._typevars_map)
-            if evaluated is not field_info.annotation and not has_instance_in_type(evaluated, PydanticRecursiveRef):
-                new_field_info = FieldInfo.from_annotation(evaluated)
+        if not field_info.evaluated:
+            # TODO Can we use field_info.apply_typevars_map here?
+            try:
+                evaluated_type = _typing_extra.eval_type(field_info.annotation, *self._types_namespace)
+            except NameError as e:
+                raise PydanticUndefinedAnnotation.from_name_error(e) from e
+            evaluated_type = replace_types(evaluated_type, self._typevars_map)
+            field_info.evaluated = True
+            if not has_instance_in_type(evaluated_type, PydanticRecursiveRef):
+                new_field_info = FieldInfo.from_annotation(evaluated_type)
                 field_info.annotation = new_field_info.annotation
 
                 # Handle any field info attributes that may have been obtained from now-resolved annotations
@@ -1344,12 +1348,13 @@ class GenerateSchema:
                 return maybe_schema
 
             origin: TypeAliasType = get_origin(obj) or obj
-
-            annotation = origin.__value__
             typevars_map = get_standard_typevars_map(obj)
 
             with self._ns_resolver.push(origin):
-                annotation = _typing_extra.eval_type(annotation, *self._types_namespace, lenient=True)
+                try:
+                    annotation = _typing_extra.eval_type(origin.__value__, *self._types_namespace)
+                except NameError as e:
+                    raise PydanticUndefinedAnnotation.from_name_error(e) from e
                 annotation = replace_types(annotation, typevars_map)
                 schema = self.generate_schema(annotation)
                 assert schema['type'] != 'definitions'
@@ -1887,34 +1892,27 @@ class GenerateSchema:
         )
 
     def _unsubstituted_typevar_schema(self, typevar: typing.TypeVar) -> core_schema.CoreSchema:
-        assert isinstance(typevar, typing.TypeVar)
-
-        bound = typevar.__bound__
-        constraints = typevar.__constraints__
-
         try:
-            typevar_has_default = typevar.has_default()  # type: ignore
+            has_default = typevar.has_default()
         except AttributeError:
-            # could still have a default if it's an old version of typing_extensions.TypeVar
-            typevar_has_default = getattr(typevar, '__default__', None) is not None
+            # Happens if using `typing.TypeVar` on Python < 3.13
+            pass
+        else:
+            if has_default:
+                return self.generate_schema(typevar.__default__)
 
-        if (bound is not None) + (len(constraints) != 0) + typevar_has_default > 1:
-            raise NotImplementedError(
-                'Pydantic does not support mixing more than one of TypeVar bounds, constraints and defaults'
-            )
+        if constraints := typevar.__constraints__:
+            return self._union_schema(typing.Union[constraints])
 
-        if typevar_has_default:
-            return self.generate_schema(typevar.__default__)  # type: ignore
-        elif constraints:
-            return self._union_schema(typing.Union[constraints])  # type: ignore
-        elif bound:
+        if bound := typevar.__bound__:
             schema = self.generate_schema(bound)
             schema['serialization'] = core_schema.wrap_serializer_function_ser_schema(
-                lambda x, h: h(x), schema=core_schema.any_schema()
+                lambda x, h: h(x),
+                schema=core_schema.any_schema(),
             )
             return schema
-        else:
-            return core_schema.any_schema()
+
+        return core_schema.any_schema()
 
     def _computed_field_schema(
         self,

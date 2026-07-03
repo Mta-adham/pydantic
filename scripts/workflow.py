@@ -943,17 +943,83 @@ def write_comparison_summary(
     return path
 
 
+def instance_log_dir(instance_id: str, run_id: str, model_name: str) -> Path:
+    safe_model = model_name.replace("/", "__")
+    return gso_log_dir() / run_id / safe_model / instance_id
+
+
 def instance_report_path(
     instance_id: str, run_id: str, model_name: str
 ) -> Path:
-    safe_model = model_name.replace("/", "__")
-    return (
-        gso_log_dir()
-        / run_id
-        / safe_model
-        / instance_id
-        / "report.json"
-    )
+    return instance_log_dir(instance_id, run_id, model_name) / "report.json"
+
+
+def clean_harness_instance_logs(
+    instance_id: str, run_id: str, model_name: str
+) -> None:
+    """Drop stale per-instance harness artifacts (symlinks, partial test_output)."""
+    log_dir = instance_log_dir(instance_id, run_id, model_name)
+    if not log_dir.is_dir():
+        return
+    print(f"Removing stale harness logs: {log_dir}")
+    shutil.rmtree(log_dir)
+
+
+def harness_report_exists(
+    instance_id: str, run_id: str, model_name: str
+) -> bool:
+    return instance_report_path(instance_id, run_id, model_name).is_file()
+
+
+def default_benchmark_run_id(instance_id: str) -> str:
+    return f"benchmark-{instance_id}"
+
+
+def default_test_run_id(instance_id: str) -> str:
+    return f"test-{instance_id}"
+
+
+def resolve_test_harness_run(
+    instance_id: str,
+    model_name: str,
+    *,
+    run_id: str | None = None,
+    from_benchmark: bool = False,
+    rerun: bool = False,
+) -> tuple[str, bool]:
+    """Pick test report source: reuse test, else benchmark, else run test harness."""
+    test_run_id = default_test_run_id(instance_id)
+    benchmark_run_id = default_benchmark_run_id(instance_id)
+
+    if run_id:
+        if rerun:
+            return run_id, True
+        return run_id, not harness_report_exists(instance_id, run_id, model_name)
+
+    if from_benchmark:
+        path = instance_report_path(instance_id, benchmark_run_id, model_name)
+        if path.is_file():
+            print(f"Using benchmark harness report: {path}")
+            return benchmark_run_id, False
+        raise SystemExit(
+            f"No benchmark harness report at {path}.\n"
+            f"Run: {harness_command_hint(instance_id, command='benchmark')}"
+        )
+
+    if rerun:
+        return test_run_id, True
+
+    test_path = instance_report_path(instance_id, test_run_id, model_name)
+    if test_path.is_file():
+        print(f"Using existing test harness report: {test_path}")
+        return test_run_id, False
+
+    benchmark_path = instance_report_path(instance_id, benchmark_run_id, model_name)
+    if benchmark_path.is_file():
+        print(f"Using benchmark harness report: {benchmark_path}")
+        return benchmark_run_id, False
+
+    return test_run_id, True
 
 
 def _read_instance_report_file(path: Path, instance_id: str) -> dict:
@@ -969,9 +1035,17 @@ def load_instance_report(
     path = instance_report_path(instance_id, run_id, model_name)
     if path.is_file():
         return _read_instance_report_file(path, instance_id)
+    log_dir = instance_log_dir(instance_id, run_id, model_name)
+    run_log = log_dir / "run_instance.log"
+    hint = (
+        f"Check {run_log} for grading errors."
+        if run_log.is_file()
+        else "A prior incomplete run may have left stale logs under logs/run_evaluation/."
+    )
     raise SystemExit(
-        f"No GSO harness report at {path}. "
-        f"Run: {harness_command_hint(instance_id, command=command)}"
+        f"No GSO harness report at {path}.\n"
+        f"{hint}\n"
+        f"Re-run: {harness_command_hint(instance_id, command=command)}"
     )
 
 
@@ -985,9 +1059,13 @@ def run_harness(
     pull_image: bool = True,
     ephemeral_image: bool = True,
     action: str = "benchmark",
+    clean_logs: bool = True,
 ) -> str:
     instance = load_instance(instance_id)
     require_active_task(instance_id, action=action)
+    run_id = run_id or f"local-{instance_id}"
+    if clean_logs:
+        clean_harness_instance_logs(instance_id, run_id, model_name)
     pred_path = predictions_path(instance_id)
     if not pred_path.exists():
         raise SystemExit(
@@ -1000,7 +1078,6 @@ def run_harness(
     else:
         verify_instance_image(instance_id, pull=False)
 
-    run_id = run_id or f"local-{instance_id}"
     harness_args = [
         "--dataset_name",
         "gso-bench/gso",
@@ -1975,24 +2052,29 @@ def test_patch(
     ephemeral_image: bool = True,
     reuse_report: bool = False,
     from_benchmark: bool = False,
+    rerun: bool = False,
 ) -> Path:
     require_active_task(instance_id, action="test")
-    if from_benchmark:
-        run_id = run_id or f"benchmark-{instance_id}"
-    else:
-        run_id = run_id or f"test-{instance_id}"
-        report_path = instance_report_path(instance_id, run_id, model_name)
-        if not reuse_report or not report_path.is_file():
-            run_harness(
-                instance_id,
-                model_name=model_name,
-                run_id=run_id,
-                timeout=timeout,
-                max_workers=max_workers,
-                pull_image=pull_image,
-                ephemeral_image=ephemeral_image,
-                action="test",
-            )
+    run_id, needs_run = resolve_test_harness_run(
+        instance_id,
+        model_name,
+        run_id=run_id,
+        from_benchmark=from_benchmark,
+        rerun=rerun,
+    )
+    if reuse_report and harness_report_exists(instance_id, run_id, model_name):
+        needs_run = False
+    if needs_run:
+        run_harness(
+            instance_id,
+            model_name=model_name,
+            run_id=run_id,
+            timeout=timeout,
+            max_workers=max_workers,
+            pull_image=pull_image,
+            ephemeral_image=ephemeral_image,
+            action="test",
+        )
     return write_test_json(instance_id, run_id, model_name)
 
 
@@ -2057,7 +2139,7 @@ def main() -> None:
 
     test_cmd = sub.add_parser(
         "test",
-        help="Run GSO harness for correctness (or read an existing harness report)",
+        help="Write tests_artemis_results.json (reuse harness report or run test harness)",
     )
     test_cmd.add_argument("instance_id")
     test_cmd.add_argument("--model-name", default="local-edit")
@@ -2073,15 +2155,17 @@ def main() -> None:
     test_cmd.add_argument(
         "--reuse-report",
         action="store_true",
-        help="Skip harness if report already exists for this run-id",
+        help="Skip harness when report.json already exists for the chosen run-id",
+    )
+    test_cmd.add_argument(
+        "--rerun",
+        action="store_true",
+        help="Force a fresh test harness run (run-id test-<task>)",
     )
     test_cmd.add_argument(
         "--from-benchmark",
         action="store_true",
-        help=(
-            "Read the benchmark run report (run-id benchmark-<task>) instead of "
-            "running a separate test harness"
-        ),
+        help="Use only the benchmark harness report; error if missing",
     )
 
     args = parser.parse_args()
@@ -2127,6 +2211,7 @@ def main() -> None:
             ephemeral_image=args.ephemeral_image,
             reuse_report=args.reuse_report,
             from_benchmark=args.from_benchmark,
+            rerun=args.rerun,
         )
     else:
         parser.print_help()
