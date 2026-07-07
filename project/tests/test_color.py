@@ -1,11 +1,14 @@
 from datetime import datetime
 
 import pytest
+from pydantic_core import PydanticCustomError
 
 from pydantic import BaseModel, ValidationError
 from pydantic.color import Color
-from pydantic.errors import ColorError
-from pydantic.utils import almost_equal_floats
+
+pytestmark = pytest.mark.filterwarnings(
+    'ignore:The `Color` class is deprecated, use `pydantic_extra_types` instead.*:DeprecationWarning'
+)
 
 
 @pytest.mark.parametrize(
@@ -41,6 +44,12 @@ from pydantic.utils import almost_equal_floats
         ('rgba(00,0,128,0.6  )', (0, 0, 128, 0.6)),
         ('rgba(0, 0, 128, 0)', (0, 0, 128, 0)),
         ('rgba(0, 0, 128, 1)', (0, 0, 128)),
+        ('rgb(0 0.2 205)', (0, 0, 205)),
+        ('rgb(0 0.2 205 / 0.6)', (0, 0, 205, 0.6)),
+        ('rgb(0 0.2 205 / 60%)', (0, 0, 205, 0.6)),
+        ('rgba(0 0 128)', (0, 0, 128)),
+        ('rgba(0 0 128 / 0.6)', (0, 0, 128, 0.6)),
+        ('rgba(0 0 128 / 60%)', (0, 0, 128, 0.6)),
         ('hsl(270, 60%, 70%)', (178, 133, 224)),
         ('hsl(180, 100%, 50%)', (0, 255, 255)),
         ('hsl(630, 60%, 70%)', (178, 133, 224)),
@@ -52,6 +61,11 @@ from pydantic.utils import almost_equal_floats
         ('hsl(10.9955rad, 60%, 70%)', (178, 133, 224)),
         ('hsl(270, 60%, 50%, .15)', (127, 51, 204, 0.15)),
         ('hsl(270.00deg, 60%, 50%, 15%)', (127, 51, 204, 0.15)),
+        ('hsl(630 60% 70%)', (178, 133, 224)),
+        ('hsl(270 60% 50% / .15)', (127, 51, 204, 0.15)),
+        ('hsla(630, 60%, 70%)', (178, 133, 224)),
+        ('hsla(630 60% 70%)', (178, 133, 224)),
+        ('hsla(270 60% 50% / .15)', (127, 51, 204, 0.15)),
     ],
 )
 def test_color_success(raw_color, as_tuple):
@@ -83,9 +97,17 @@ def test_color_success(raw_color, as_tuple):
         # rgb/rgba strings
         'rgb(0, 0, 1205)',
         'rgb(0, 0, 1128)',
+        'rgb(0, 0, 200 / 0.2)',
+        'rgb(72 122 18, 0.3)',
         'rgba(0, 0, 11205, 0.1)',
         'rgba(0, 0, 128, 11.5)',
+        'rgba(0, 0, 128 / 11.5)',
+        'rgba(72 122 18 0.3)',
+        # hsl/hsla strings
         'hsl(180, 101%, 50%)',
+        'hsl(72 122 18 / 0.3)',
+        'hsl(630 60% 70%, 0.3)',
+        'hsla(72 122 18 / 0.3)',
         # neither a tuple, not a string
         datetime(2017, 10, 5, 19, 47, 7),
         object,
@@ -93,8 +115,9 @@ def test_color_success(raw_color, as_tuple):
     ],
 )
 def test_color_fail(color):
-    with pytest.raises(ColorError):
+    with pytest.raises(PydanticCustomError) as exc_info:
         Color(color)
+    assert exc_info.value.type == 'color_error'
 
 
 def test_model_validation():
@@ -105,12 +128,13 @@ def test_model_validation():
     assert Model(color=Color('red')).color.as_hex() == '#f00'
     with pytest.raises(ValidationError) as exc_info:
         Model(color='snot')
-    assert exc_info.value.errors() == [
+    # insert_assert(exc_info.value.errors(include_url=False))
+    assert exc_info.value.errors(include_url=False) == [
         {
+            'type': 'color_error',
             'loc': ('color',),
             'msg': 'value is not a valid color: string not recognised as a valid color',
-            'type': 'value_error.color',
-            'ctx': {'reason': 'string not recognised as a valid color'},
+            'input': 'snot',
         }
     ]
 
@@ -142,13 +166,13 @@ def test_as_hsl():
 
 def test_as_hsl_tuple():
     c = Color('016997')
-    h, s, l, a = c.as_hsl_tuple(alpha=True)
-    assert almost_equal_floats(h, 0.551, delta=0.01)
-    assert almost_equal_floats(s, 0.986, delta=0.01)
-    assert almost_equal_floats(l, 0.298, delta=0.01)
+    h, s, l_, a = c.as_hsl_tuple(alpha=True)
+    assert h == pytest.approx(0.551, rel=0.01)
+    assert s == pytest.approx(0.986, rel=0.01)
+    assert l_ == pytest.approx(0.298, rel=0.01)
     assert a == 1
 
-    assert c.as_hsl_tuple(alpha=False) == c.as_hsl_tuple(alpha=None) == (h, s, l)
+    assert c.as_hsl_tuple(alpha=False) == c.as_hsl_tuple(alpha=None) == (h, s, l_)
 
     c = Color((3, 40, 50, 0.5))
     hsla = c.as_hsl_tuple(alpha=None)
@@ -184,3 +208,18 @@ def test_str_repr():
     assert repr(Color('red')) == "Color('red', rgb=(255, 0, 0))"
     assert str(Color((1, 2, 3))) == '#010203'
     assert repr(Color((1, 2, 3))) == "Color('#010203', rgb=(1, 2, 3))"
+
+
+def test_eq():
+    assert Color('red') == Color('red')
+    assert Color('red') != Color('blue')
+    assert Color('red') != 'red'
+
+    assert Color('red') == Color((255, 0, 0))
+    assert Color('red') != Color((0, 0, 255))
+
+
+def test_color_hashable():
+    assert hash(Color('red')) != hash(Color('blue'))
+    assert hash(Color('red')) == hash(Color((255, 0, 0)))
+    assert hash(Color('red')) != hash(Color((255, 0, 0, 0.5)))

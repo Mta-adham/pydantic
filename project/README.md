@@ -1,27 +1,40 @@
-# pydantic
-
-[![CI](https://github.com/samuelcolvin/pydantic/workflows/CI/badge.svg?event=push)](https://github.com/samuelcolvin/pydantic/actions?query=event%3Apush+branch%3Amaster+workflow%3ACI)
-[![Coverage](https://codecov.io/gh/samuelcolvin/pydantic/branch/master/graph/badge.svg)](https://codecov.io/gh/samuelcolvin/pydantic)
+# Pydantic
+[![CI](https://img.shields.io/github/actions/workflow/status/pydantic/pydantic/ci.yml?branch=main&logo=github&label=CI)](https://github.com/pydantic/pydantic/actions?query=event%3Apush+branch%3Amain+workflow%3ACI)
+[![Coverage](https://coverage-badge.samuelcolvin.workers.dev/pydantic/pydantic.svg)](https://coverage-badge.samuelcolvin.workers.dev/redirect/pydantic/pydantic)
 [![pypi](https://img.shields.io/pypi/v/pydantic.svg)](https://pypi.python.org/pypi/pydantic)
 [![CondaForge](https://img.shields.io/conda/v/conda-forge/pydantic.svg)](https://anaconda.org/conda-forge/pydantic)
-[![downloads](https://img.shields.io/pypi/dm/pydantic.svg)](https://pypistats.org/packages/pydantic)
-[![versions](https://img.shields.io/pypi/pyversions/pydantic.svg)](https://github.com/samuelcolvin/pydantic)
-[![license](https://img.shields.io/github/license/samuelcolvin/pydantic.svg)](https://github.com/samuelcolvin/pydantic/blob/master/LICENSE)
+[![downloads](https://static.pepy.tech/badge/pydantic/month)](https://pepy.tech/project/pydantic)
+[![versions](https://img.shields.io/pypi/pyversions/pydantic.svg)](https://github.com/pydantic/pydantic)
+[![license](https://img.shields.io/github/license/pydantic/pydantic.svg)](https://github.com/pydantic/pydantic/blob/main/LICENSE)
+[![Pydantic v2](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/pydantic/pydantic/main/docs/badge/v2.json)](https://docs.pydantic.dev/latest/contributing/#badges)
 
-Data validation and settings management using Python type hinting.
+Data validation using Python type hints.
 
-Fast and extensible, *pydantic* plays nicely with your linters/IDE/brain.
-Define how data should be in pure, canonical Python 3.6+; validate it with *pydantic*.
+Fast and extensible, Pydantic plays nicely with your linters/IDE/brain.
+Define how data should be in pure, canonical Python 3.8+; validate it with Pydantic.
+
+## Pydantic Logfire :fire:
+
+We've recently launched Pydantic Logfire to help you monitor your applications.
+[Learn more](https://pydantic.dev/articles/logfire-announcement)
+
+## Pydantic V1.10 vs. V2
+
+Pydantic V2 is a ground-up rewrite that offers many new features, performance improvements, and some breaking changes compared to Pydantic V1.
+
+If you're using Pydantic V1 you may want to look at the
+[pydantic V1.10 Documentation](https://docs.pydantic.dev/) or,
+[`1.10.X-fixes` git branch](https://github.com/pydantic/pydantic/tree/1.10.X-fixes). Pydantic V2 also ships with the latest version of Pydantic V1 built in so that you can incrementally upgrade your code base and projects: `from pydantic import v1 as pydantic_v1`.
 
 ## Help
 
-See [documentation](https://pydantic-docs.helpmanual.io/) for more details.
+See [documentation](https://docs.pydantic.dev/) for more details.
 
 ## Installation
 
 Install using `pip install -U pydantic` or `conda install pydantic -c conda-forge`.
-For more installation options to make *pydantic* even faster,
-see the [Install](https://pydantic-docs.helpmanual.io/install/) section in the documentation.
+For more installation options to make Pydantic even faster,
+see the [Install](https://docs.pydantic.dev/install/) section in the documentation.
 
 ## A Simple Example
 
@@ -32,7 +45,7 @@ from pydantic import BaseModel
 
 class User(BaseModel):
     id: int
-    name = 'John Doe'
+    name: str = 'John Doe'
     signup_ts: Optional[datetime] = None
     friends: List[int] = []
 
@@ -47,9 +60,9 @@ print(user.id)
 ## Contributing
 
 For guidance on setting up a development environment and how to make a
-contribution to *pydantic*, see
-[Contributing to Pydantic](https://pydantic-docs.helpmanual.io/contributing/).
+contribution to Pydantic, see
+[Contributing to Pydantic](https://docs.pydantic.dev/contributing/).
 
 ## Reporting a Security Vulnerability
 
-See our [security policy](https://github.com/samuelcolvin/pydantic/security/policy).
+See our [security policy](https://github.com/pydantic/pydantic/security/policy).
