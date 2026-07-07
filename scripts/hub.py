@@ -21,8 +21,8 @@ def hub_root() -> Path:
     return Path(os.environ.get("GSO_WORKSPACE_ROOT", ".")).resolve()
 
 
-def benchmarks_dir(root: Path | None = None) -> Path:
-    return (root or hub_root()) / "benchmarks"
+def eval_dir(root: Path | None = None) -> Path:
+    return (root or hub_root()) / "eval"
 
 
 def benchmark_slug(instance_id: str) -> str:
@@ -31,8 +31,32 @@ def benchmark_slug(instance_id: str) -> str:
     return instance_id
 
 
-def benchmark_def_path(root: Path, instance_id: str) -> Path:
-    return benchmarks_dir(root) / benchmark_slug(instance_id) / "benchmark.yaml"
+def eval_task_dir(root: Path, instance_id: str) -> Path | None:
+    """Find the eval task directory for instance_id by scanning eval/*/benchmark.yaml."""
+    base = eval_dir(root)
+    if not base.is_dir():
+        return None
+    for entry in sorted(base.iterdir()):
+        if not entry.is_dir():
+            continue
+        path = entry / "benchmark.yaml"
+        if not path.is_file():
+            continue
+        try:
+            data = yaml.safe_load(path.read_text())
+        except Exception:
+            continue
+        if isinstance(data, dict) and data.get("instance_id") == instance_id:
+            return entry
+    return None
+
+
+def optimization_guide_path(root: Path, instance_id: str) -> Path | None:
+    task_dir = eval_task_dir(root, instance_id)
+    if task_dir is None:
+        return None
+    p = task_dir / "OPTIMIZATION.md"
+    return p if p.is_file() else None
 
 
 def gso_task_id_path(root: Path | None = None) -> Path:
@@ -50,7 +74,7 @@ def read_gso_task_instance_id(root: Path | None = None) -> str | None:
 
 
 def sync_gso_task_id(root: Path, instance_id: str) -> Path:
-    """Write .gso_task_id from benchmarks/<slug>/benchmark.yaml."""
+    """Write .gso_task_id from eval/<task>/benchmark.yaml."""
     defn = load_benchmark_def(root, instance_id)
     path = gso_task_id_path(root)
     path.write_text(yaml.safe_dump(defn, sort_keys=False, default_flow_style=False))
@@ -58,13 +82,15 @@ def sync_gso_task_id(root: Path, instance_id: str) -> Path:
 
 
 def list_instance_ids(root: Path | None = None) -> list[str]:
-    """All instance IDs from benchmarks/*/benchmark.yaml (sorted)."""
+    """All instance IDs from eval/*/benchmark.yaml (sorted)."""
     root = root or hub_root()
     ids: list[str] = []
-    bench_dir = benchmarks_dir(root)
-    if not bench_dir.is_dir():
+    base = eval_dir(root)
+    if not base.is_dir():
         return ids
-    for entry in sorted(bench_dir.iterdir()):
+    for entry in sorted(base.iterdir()):
+        if not entry.is_dir():
+            continue
         path = entry / "benchmark.yaml"
         if not path.is_file():
             continue
@@ -75,17 +101,18 @@ def list_instance_ids(root: Path | None = None) -> list[str]:
 
 
 def load_benchmark_def(root: Path, instance_id: str) -> dict[str, Any]:
-    path = benchmark_def_path(root, instance_id)
-    if not path.exists():
+    task_dir = eval_task_dir(root, instance_id)
+    if task_dir is None:
         task_path = gso_task_id_path(root)
         if task_path.is_file():
             data = yaml.safe_load(task_path.read_text())
             if isinstance(data, dict) and data.get("instance_id") == instance_id:
                 return data
         raise SystemExit(
-            f"No benchmark definition for {instance_id} at {path}\n"
-            "Each eval must have benchmarks/<slug>/benchmark.yaml with a pinned digest."
+            f"No benchmark definition for {instance_id}\n"
+            "Each task must have eval/<task>/benchmark.yaml with a pinned digest."
         )
+    path = task_dir / "benchmark.yaml"
     data = yaml.safe_load(path.read_text())
     if not isinstance(data, dict):
         raise SystemExit(f"Invalid benchmark definition (expected mapping): {path}")
@@ -267,7 +294,10 @@ def verify_benchmark_image(
 
 
 def pin_digest_from_registry(root: Path, instance_id: str) -> str:
-    path = benchmark_def_path(root, instance_id)
+    task_dir = eval_task_dir(root, instance_id)
+    if task_dir is None:
+        raise SystemExit(f"No eval task directory found for {instance_id}")
+    path = task_dir / "benchmark.yaml"
     defn = load_benchmark_def(root, instance_id)
     image_tag = defn["target"]["image"]
 

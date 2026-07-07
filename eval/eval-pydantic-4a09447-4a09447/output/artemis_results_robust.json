@@ -1,0 +1,225 @@
+{
+  "instance_id": "pydantic__pydantic-4a09447",
+  "run_id": "benchmark-pydantic__pydantic-4a09447",
+  "model_name": "local-edit",
+  "recorded_at": "2026-07-07T17:09:29.537035+00:00",
+  "patch": {
+    "patch_type": "unchanged",
+    "code_changes": false
+  },
+  "summary": {
+    "headline": "No measurable improvement vs baseline. Likely measurement noise (unchanged code).",
+    "verdict": "no_change",
+    "measurement": {
+      "likely_noise": true,
+      "code_changes": false,
+      "statistically_significant": false,
+      "ci_includes_no_change": true,
+      "explanation": "Baseline and optimized code are the same. Any timing difference is harness measurement noise, not a real optimization."
+    },
+    "runtime_s": {
+      "baseline": 0.05362507333333332,
+      "optimized": 0.05342557999999999,
+      "expert": 0.011857666666666666
+    },
+    "vs_baseline": {
+      "speedup": 1.003693,
+      "time_saved_s": 0.000199,
+      "significant": false,
+      "direction": "unchanged"
+    },
+    "vs_expert": {
+      "matches_expert": false,
+      "parity_percent": 18.63,
+      "comparison": "Expert is ~5.4\u00d7 faster than you",
+      "time_delta_s": 0.041568,
+      "time_ratio": 4.5056
+    },
+    "expert_vs_baseline": {
+      "speedup": 5.388104,
+      "time_saved_s": 0.041767,
+      "time_ratio": 4.5224
+    },
+    "memory": {
+      "measured": false
+    },
+    "confidence": {
+      "compared_to": "baseline",
+      "speedup_ratio_estimate": 1.0031,
+      "speedup_ratio_ci_95_low": 0.7704,
+      "speedup_ratio_ci_95_high": 1.3072,
+      "ci_includes_no_change": true,
+      "statistically_significant": false,
+      "interpretation": "Optimized is 0.37% faster than baseline \u2014 0.199ms faster per run (1.0037\u00d7 speedup). 95% CI for speedup: 0.770\u00d7\u20131.307\u00d7 (-23.0% to +30.7% vs baseline) includes no change \u2014 likely measurement noise.",
+      "within_measurement_noise": true,
+      "tests_faster_than_baseline": "7/15"
+    },
+    "harness": {
+      "tests_passed": 15,
+      "tests_total": 15,
+      "opt_base_passed": false,
+      "opt_commit_passed": false
+    },
+    "eval": {
+      "timing_source": "gso_harness",
+      "correctness_passed": true,
+      "patch_applied": true,
+      "harness_ran": true,
+      "opt_base_passed": false,
+      "opt_commit_passed": false,
+      "perf_tests_passed": 15,
+      "perf_tests_total": 15,
+      "perf_completion_rate": 100.0,
+      "memory_measured": false
+    },
+    "latency": {
+      "baseline": {
+        "p50_ms": 30.131,
+        "p75_ms": 38.647,
+        "p95_ms": 146.418,
+        "p99_ms": 166.262,
+        "min_ms": 2.685,
+        "max_ms": 175.464,
+        "n_samples": 125
+      },
+      "optimized": {
+        "p50_ms": 29.71,
+        "p75_ms": 39.416,
+        "p95_ms": 145.518,
+        "p99_ms": 158.552,
+        "min_ms": 2.561,
+        "max_ms": 161.519,
+        "n_samples": 125
+      },
+      "expert": {
+        "p50_ms": 4.437,
+        "p75_ms": 7.449,
+        "p95_ms": 34.562,
+        "p99_ms": 43.29,
+        "min_ms": 0.907,
+        "max_ms": 45.411,
+        "n_samples": 125
+      },
+      "optimized_p99_vs_p50": 5.337
+    },
+    "per_test": {
+      "n_tests": 15,
+      "baseline_ms": [
+        15.385,
+        23.737,
+        61.709,
+        18.529,
+        18.841,
+        103.519,
+        21.226,
+        164.669,
+        16.325,
+        21.039,
+        27.207,
+        146.019,
+        111.876,
+        22.24,
+        32.057
+      ],
+      "optimized_ms": [
+        14.101,
+        23.81,
+        61.278,
+        18.548,
+        18.706,
+        104.383,
+        21.505,
+        158.107,
+        16.557,
+        20.813,
+        26.982,
+        145.246,
+        115.918,
+        22.328,
+        33.102
+      ],
+      "speedup_vs_baseline": [
+        1.0911,
+        0.9969,
+        1.007,
+        0.999,
+        1.0072,
+        0.9917,
+        0.987,
+        1.0415,
+        0.986,
+        1.0109,
+        1.0083,
+        1.0053,
+        0.9651,
+        0.9961,
+        0.9684
+      ],
+      "expert_ms": [
+        1.213,
+        2.432,
+        7.6,
+        2.326,
+        2.527,
+        16.232,
+        3.115,
+        27.519,
+        3.446,
+        4.808,
+        7.044,
+        43.367,
+        34.243,
+        6.896,
+        15.098
+      ],
+      "expert_speedup_vs_baseline": [
+        12.6876,
+        9.7606,
+        8.12,
+        7.966,
+        7.4547,
+        6.3775,
+        6.8134,
+        5.9838,
+        4.7374,
+        4.3763,
+        3.8622,
+        3.367,
+        3.2671,
+        3.2252,
+        2.1233
+      ],
+      "optimized_time_ratio_vs_expert": [
+        11.6284,
+        9.7907,
+        8.0633,
+        7.9742,
+        7.4013,
+        6.4308,
+        6.9032,
+        5.7454,
+        4.8047,
+        4.3293,
+        3.8304,
+        3.3492,
+        3.3852,
+        3.238,
+        2.1924
+      ]
+    }
+  },
+  "harness_report": "/home/manal/Benchmarks/gso/repos/pydantic/logs/run_evaluation/benchmark-pydantic__pydantic-4a09447/local-edit/pydantic__pydantic-4a09447/report.json",
+  "provenance": {
+    "benchmark": "pydantic-4a09447",
+    "instance_id": "pydantic__pydantic-4a09447",
+    "timestamp": "2026-07-07T17:09:29.537035+00:00",
+    "benchmark_def_sha256": "52f08a4d5327422d22d35adbc46bf13864b510034748b43f30e56a68c7843134",
+    "dataset_version": "gso-bench/gso@test",
+    "image": "slimshetty/gso:gso.eval.x86_64.pydantic__pydantic-4a09447",
+    "image_digest": "sha256:4fda14e0ab2ed60dbb7778e837fb16467b98b40ccfb547e25d2db019d966b18b",
+    "git_repo": "pydantic/pydantic",
+    "git_sha": "4a094477c6a6",
+    "git_base_commit": "4a094477c6a66ba36e36875d09f3d52475991709^",
+    "gso_version": "unknown"
+  }
+}

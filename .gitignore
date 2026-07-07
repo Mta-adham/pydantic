@@ -1,19 +1,23 @@
-# Per-task eval workspaces (generated at run time)
-eval/
+# Per-task eval workspaces — generated runtime artifacts are ignored, prompt.md is tracked
+eval/*/baseline/
+eval/*/expert/
+eval/*/metadata.json
+eval/*/patch.diff
+eval/*/predictions.jsonl
 
 # Cached HuggingFace instance payloads (benchmark defs are tracked)
-benchmarks/**/instance.json
+eval/*/instance.json
 
-# Latest benchmark copy (regenerated each run)
-artemis_results.json
-artemis_results_robust.json
-tests_artemis_results.json
-summary.txt
+# Latest benchmark copy at hub root (regenerated each run; per-task copies in eval/*/output/ are tracked)
+/artemis_results.json
+/artemis_results_robust.json
+/tests_artemis_results.json
+/summary.txt
 
 # Harness logs
 logs/
 
-# Local git metadata for task switching (vendored files are tracked above)
+# Vendored upstream source (tracked); nested clone metadata is not
 project/.git/
 
 # Local Python environment

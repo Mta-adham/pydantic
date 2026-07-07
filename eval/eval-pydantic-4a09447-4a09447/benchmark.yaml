@@ -12,6 +12,7 @@ git:
 
 runner:
   timeout_seconds: 300
+  timing_iterations: 15
 
 api: GenericModel.__concrete_name__
 files:

@@ -12,6 +12,7 @@ git:
 
 runner:
   timeout_seconds: 120
+  timing_iterations: 15
 
 api: BaseModel.__setattr__
 files:

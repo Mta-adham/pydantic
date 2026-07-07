@@ -12,6 +12,7 @@ git:
 
 runner:
   timeout_seconds: 400
+  timing_iterations: 15
 
 api: TypeAdapter.validate_python
 files:

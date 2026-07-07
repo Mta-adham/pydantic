@@ -46,9 +46,9 @@ def load_instance(instance_id: str):
 def _load_hub_instance(root: Path, instance_id: str):
     """Load a task instance for the benchmark hub (cached JSON or HuggingFace)."""
     runner = _runner_module()
-    slug = instance_id.split("__", 1)[-1] if "__" in instance_id else instance_id
-    cache = root / "benchmarks" / slug / "instance.json"
-    if cache.is_file():
+    task_dir = runner.eval_task_dir(root, instance_id)
+    cache = task_dir / "instance.json" if task_dir else None
+    if cache and cache.is_file():
         from gso.data.dataset import GSOInstance
 
         return GSOInstance(**json.loads(cache.read_text()))
@@ -62,14 +62,15 @@ def _load_hub_instance(root: Path, instance_id: str):
     if not matches:
         raise SystemExit(
             f"Unknown instance_id: {instance_id}\n"
-            f"Check dataset_version in benchmarks/{slug}/benchmark.yaml "
+            f"Check dataset_version in eval/<task>/benchmark.yaml "
             f"and HF_TOKEN for HuggingFace access."
         )
     instance = matches[0]
-    try:
-        cache.write_text(json.dumps(instance.__dict__, indent=2) + "\n")
-    except OSError:
-        pass
+    if cache:
+        try:
+            cache.write_text(json.dumps(instance.__dict__, indent=2) + "\n")
+        except OSError:
+            pass
     return instance
 
 
@@ -488,6 +489,7 @@ def populate_expert_dir(instance, root: Path, rel_files: list[str]) -> None:
     """Copy task files at opt_commit into eval/<task>/expert/ for local reference."""
     expert_dir = root / "expert"
     if expert_dir.is_dir() and any(expert_dir.rglob("*")):
+        sync_optimization_guide(instance.instance_id, expert_dir)
         return
     expert_src = root / ".expert_src"
     try:
@@ -506,8 +508,20 @@ def populate_expert_dir(instance, root: Path, rel_files: list[str]) -> None:
             shutil.copy2(src, dst)
         if any(expert_dir.rglob("*")):
             print(f"Wrote expert/: {expert_dir}")
+        sync_optimization_guide(instance.instance_id, expert_dir)
     finally:
         shutil.rmtree(expert_src, ignore_errors=True)
+
+
+def sync_optimization_guide(instance_id: str, expert_dir: Path) -> None:
+    """Copy eval/<task>/OPTIMIZATION.md into eval/<task>/expert/ when present."""
+    src = _runner_module().optimization_guide_path(benchmark_root(), instance_id)
+    if not src:
+        return
+    expert_dir.mkdir(parents=True, exist_ok=True)
+    dst = expert_dir / "OPTIMIZATION.md"
+    shutil.copy2(src, dst)
+    print(f"Wrote optimization guide: {dst}")
 
 
 def setup_workspace(
@@ -839,10 +853,11 @@ def hub_summary_path() -> Path:
 
 
 def _format_baseline_opt_line(
-    passed: bool | None, percent_faster: float | None
+    passed: bool | None, speedup: float | None
 ) -> str:
     need = BASELINE_OPT_PERCENT
-    if percent_faster is None:
+    pct = _percent_faster(speedup)
+    if pct is None:
         if passed is None:
             return "n/a"
         return (
@@ -850,10 +865,10 @@ def _format_baseline_opt_line(
             if passed
             else f"no (≥{need}% faster required)"
         )
-    if percent_faster >= 0:
-        actual = f"{percent_faster:.2f}% faster than baseline"
+    if pct >= 0:
+        actual = f"{pct:.2f}% faster than baseline"
     else:
-        actual = f"{abs(percent_faster):.2f}% slower than baseline"
+        actual = f"{abs(pct):.2f}% slower than baseline"
     if passed:
         return f"yes — {actual} (≥{need}% required)"
     return f"no — {actual} (needs ≥{need}%)"
@@ -886,6 +901,8 @@ def write_comparison_summary(
     runtime = summary.get("runtime_s") or {}
     vs_base = summary.get("vs_baseline") or {}
     vs_expert = summary.get("vs_expert") or {}
+    expert_vs_baseline = summary.get("expert_vs_baseline") or {}
+    eval_metrics = summary.get("eval") or {}
     harness = summary.get("harness") or {}
     confidence = summary.get("confidence") or {}
     measurement = summary.get("measurement") or {}
@@ -958,7 +975,6 @@ def write_comparison_summary(
         "",
         "vs baseline",
         f"  speedup:        {vs_base.get('speedup')}x",
-        f"  percent_faster: {vs_base.get('percent_faster')}%",
         f"  time_saved_s:   {vs_base.get('time_saved_s')}",
         f"  direction:      {vs_base.get('direction')}",
         "",
@@ -966,6 +982,20 @@ def write_comparison_summary(
         f"  parity_percent: {vs_expert.get('parity_percent')}%",
         f"  comparison:     {vs_expert.get('comparison')}",
         f"  matches_expert: {vs_expert.get('matches_expert')}",
+        "",
+        "expert vs baseline",
+        f"  speedup:        {expert_vs_baseline.get('speedup')}x",
+        f"  time_saved_s:   {expert_vs_baseline.get('time_saved_s')}",
+        "",
+        "Eval metrics (GSO harness — do not use external time.time())",
+        f"  correctness_passed: {_harness_status(eval_metrics.get('correctness_passed'), yes='yes', no='no')}",
+        f"  patch_applied:      {_harness_status(eval_metrics.get('patch_applied'), yes='yes', no='no')}",
+        f"  opt_base_passed:    {_format_baseline_opt_line(harness.get('opt_base_passed'), vs_base.get('speedup'))}",
+        f"  opt_commit_passed:  {_format_expert_opt_line(harness.get('opt_commit_passed'), vs_expert.get('parity_percent'))}",
+        f"  perf_completion:    {eval_metrics.get('perf_tests_passed')}/{eval_metrics.get('perf_tests_total')}"
+        if eval_metrics.get("perf_tests_total")
+        else "  perf_completion:    n/a",
+        f"  memory_measured:    {'yes' if eval_metrics.get('memory_measured') else 'no'}",
         "",
         "Confidence",
         f"  {confidence.get('interpretation', '')}",
@@ -975,7 +1005,7 @@ def write_comparison_summary(
         if tests_total is not None
         else f"  tests:                n/a",
         f"  benchmark_completed:  {_harness_status(run_ok, yes='yes', no='no — run failed or incomplete')}",
-        f"  beat_baseline:        {_format_baseline_opt_line(harness.get('opt_base_passed'), vs_base.get('percent_faster'))}",
+        f"  beat_baseline:        {_format_baseline_opt_line(harness.get('opt_base_passed'), vs_base.get('speedup'))}",
         f"  matches_expert:       {_format_expert_opt_line(harness.get('opt_commit_passed'), vs_expert.get('parity_percent'))}",
         "",
         "Results (hub root)",
@@ -1172,6 +1202,11 @@ def run_harness(
     print("Running GSO harness...")
     try:
         env = os.environ.copy()
+        defn = _runner_module().load_benchmark_def(benchmark_root(), instance_id)
+        timing_iters = (defn.get("runner") or {}).get("timing_iterations")
+        if timing_iters and str(timing_iters).isdigit() and int(timing_iters) > 0:
+            env["GSO_TIMING_ITERS"] = str(int(timing_iters))
+            print(f"Timing iterations: {timing_iters} (from benchmark.yaml)")
         proc = subprocess.run(cmd, cwd=harness_cwd, text=True, check=False, env=env)
         if proc.returncode != 0:
             raise SystemExit(proc.returncode)
@@ -1223,9 +1258,6 @@ def _slim_vs_baseline(
         out["speedup"] = round(speedup, 6)
     if time_saved is not None:
         out["time_saved_s"] = time_saved
-    pct = _percent_faster(speedup)
-    if pct is not None:
-        out["percent_faster"] = pct
     if significant is not None:
         out["significant"] = significant
         out["direction"] = _effective_direction(speedup, significant=significant)
@@ -1282,7 +1314,47 @@ def _slim_vs_expert(
     if delta is not None:
         out["time_delta_s"] = delta
     if ratio is not None:
-        out["runtime_ratio"] = ratio
+        out["time_ratio"] = ratio  # optimized / expert: >1 means slower than expert
+    return out
+
+
+def _slim_expert_vs_baseline(
+    baseline_s: float | None,
+    expert_s: float | None,
+    speedup: float | None,
+) -> dict:
+    """Expert vs baseline: speedup = baseline ÷ expert (>1 means expert is faster)."""
+    out = _slim_vs_baseline(baseline_s, expert_s, speedup)
+    ratio = _runtime_ratio_to_expert(baseline_s, expert_s)  # baseline / expert: same convention as vs_expert.time_ratio
+    if ratio is not None:
+        out["time_ratio"] = ratio  # baseline / expert: >1 means baseline is slower than expert
+    return out
+
+
+def _slim_memory(mem_stats: dict) -> dict:
+    if not mem_stats:
+        return {"measured": False}
+    baseline_mb = mem_stats.get("baseline_mb") or mem_stats.get("baseline")
+    optimized_mb = mem_stats.get("optimized_mb") or mem_stats.get("optimized")
+    expert_mb = mem_stats.get("expert_mb") or mem_stats.get("expert")
+    if not any(v is not None for v in (baseline_mb, optimized_mb, expert_mb)):
+        return {"measured": False}
+    out: dict = {"measured": True}
+    if baseline_mb is not None:
+        out["baseline_mb"] = round(float(baseline_mb), 3)
+    if optimized_mb is not None:
+        out["optimized_mb"] = round(float(optimized_mb), 3)
+    if expert_mb is not None:
+        out["expert_mb"] = round(float(expert_mb), 3)
+    b, o, e = (
+        float(baseline_mb) if baseline_mb is not None else None,
+        float(optimized_mb) if optimized_mb is not None else None,
+        float(expert_mb) if expert_mb is not None else None,
+    )
+    if b and o is not None:
+        out["vs_baseline_reduction_pct"] = round((b - o) / b * 100, 2)
+    if o and e is not None:
+        out["vs_expert_parity_pct"] = round(e / o * 100, 2)
     return out
 
 
@@ -1696,6 +1768,166 @@ def _improvement_headline(
     )
 
 
+def _harness_eval_metrics(
+    instance_report: dict,
+    *,
+    harness: dict | None = None,
+) -> dict:
+    """Correctness, Opt@1 gates, and perf completion from the GSO harness report.
+
+    Wall-clock timings and speedups must come from this harness (timeit microbenchmarks
+    inside the task Docker image) — not from external time.time() wrappers.
+    """
+    harness = harness or {}
+    tests_total = int(harness.get("tests_total") or 0)
+    tests_passed = int(harness.get("tests_passed") or 0)
+    if not tests_total:
+        per_test = (instance_report.get("time_stats") or {}).get(
+            "per_test_means", {}
+        ).get("base") or instance_report.get("base_times") or []
+        tests_total = len(per_test)
+        if instance_report.get("test_passed") and tests_total:
+            tests_passed = tests_total
+
+    perf_completion_rate = (
+        round(100.0 * tests_passed / tests_total, 2)
+        if tests_total > 0
+        else None
+    )
+
+    mem_stats = instance_report.get("memory_stats") or {}
+    memory_measured = bool(mem_stats)
+
+    metrics: dict = {
+        "timing_source": "gso_harness",
+        "correctness_passed": instance_report.get("test_passed"),
+        "patch_applied": instance_report.get("patch_successfully_applied"),
+        "harness_ran": instance_report.get("base_successfully_run"),
+        "opt_base_passed": instance_report.get("opt_base"),
+        "opt_commit_passed": instance_report.get("opt_commit"),
+        "perf_tests_passed": tests_passed if tests_total else None,
+        "perf_tests_total": tests_total or None,
+        "perf_completion_rate": perf_completion_rate,
+        "memory_measured": memory_measured,
+    }
+
+    if memory_measured:
+        for role, dst_key in (
+            ("baseline", "memory_mb_baseline"),
+            ("optimized", "memory_mb_optimized"),
+            ("expert", "memory_mb_expert"),
+        ):
+            value = mem_stats.get(role)
+            if value is None:
+                value = mem_stats.get(f"{role}_mb")
+            if value is not None:
+                metrics[dst_key] = round(float(value), 3)
+
+    return metrics
+
+
+def _numeric_eval_metrics(metrics: dict) -> dict[str, int | float]:
+    out: dict[str, int | float] = {}
+    for key in (
+        "correctness_passed",
+        "patch_applied",
+        "harness_ran",
+        "opt_base_passed",
+        "memory_measured",
+    ):
+        if metrics.get(key) is not None:
+            out[key] = _bool_num(metrics[key])
+    rate = _finite_scalar(metrics.get("perf_completion_rate"))
+    if rate is not None:
+        out["perf_completion_rate"] = rate
+    for key in (
+        "memory_mb_baseline",
+        "memory_mb_optimized",
+        "memory_mb_expert",
+    ):
+        value = _finite_scalar(metrics.get(key))
+        if value is not None:
+            out[key] = value
+    return out
+
+
+def _slim_latency(instance_report: dict) -> dict | None:
+    """P50/P95/P99 distribution across all raw timing samples for each variant."""
+
+    def _pct(raw: list[list[float]] | None) -> dict | None:
+        if not raw:
+            return None
+        flat = [t for group in raw for t in group if t is not None]
+        if not flat:
+            return None
+        arr = np.array(flat)
+        return {
+            "p50_ms": round(float(np.percentile(arr, 50)) * 1000, 3),
+            "p75_ms": round(float(np.percentile(arr, 75)) * 1000, 3),
+            "p95_ms": round(float(np.percentile(arr, 95)) * 1000, 3),
+            "p99_ms": round(float(np.percentile(arr, 99)) * 1000, 3),
+            "min_ms": round(float(arr.min()) * 1000, 3),
+            "max_ms": round(float(arr.max()) * 1000, 3),
+            "n_samples": len(flat),
+        }
+
+    result = {}
+    for raw_key, label in (
+        ("base_times", "baseline"),
+        ("patch_times", "optimized"),
+        ("commit_times", "expert"),
+    ):
+        pct = _pct(instance_report.get(raw_key))
+        if pct:
+            result[label] = pct
+
+    if not result:
+        return None
+
+    opt = result.get("optimized") or {}
+    if opt.get("p50_ms") and opt.get("p99_ms") and opt["p50_ms"] > 0:
+        result["optimized_p99_vs_p50"] = round(opt["p99_ms"] / opt["p50_ms"], 3)
+
+    return result
+
+
+def _slim_per_test(instance_report: dict) -> dict | None:
+    """Per-test means (ms) for baseline, optimized, expert + per-test speedup."""
+    per_test_means = (instance_report.get("time_stats") or {}).get("per_test_means") or {}
+    base = per_test_means.get("base") or []
+    patch = per_test_means.get("patch") or []
+    commit = per_test_means.get("commit") or []
+    if not base:
+        return None
+    n = len(base)
+
+    def _ms(v: float) -> float:
+        return round(v * 1000, 3)
+
+    result: dict = {
+        "n_tests": n,
+        "baseline_ms": [_ms(v) for v in base],
+    }
+    if patch and len(patch) == n:
+        result["optimized_ms"] = [_ms(v) for v in patch]
+        speedups_opt = []
+        for b, p in zip(base, patch):
+            speedups_opt.append(round(b / p, 4) if p and p > 0 else None)
+        result["speedup_vs_baseline"] = speedups_opt
+    if commit and len(commit) == n:
+        result["expert_ms"] = [_ms(v) for v in commit]
+        speedups_exp = []
+        for b, c in zip(base, commit):
+            speedups_exp.append(round(b / c, 4) if c and c > 0 else None)
+        result["expert_speedup_vs_baseline"] = speedups_exp
+    if patch and commit and len(patch) == n and len(commit) == n:
+        speedups_vs_exp = []
+        for p, c in zip(patch, commit):
+            speedups_vs_exp.append(round(p / c, 4) if c and c > 0 else None)
+        result["optimized_time_ratio_vs_expert"] = speedups_vs_exp
+    return result
+
+
 def build_improvement_summary(
     instance_report: dict, *, instance_id: str | None = None
 ) -> dict:
@@ -1707,6 +1939,7 @@ def build_improvement_summary(
     commit_mean = time_stats.get("commit_mean")
     gm_patch_base = opt_stats.get("gm_speedup_patch_base")
     gm_patch_commit = opt_stats.get("gm_speedup_patch_commit")
+    gm_commit_base = opt_stats.get("gm_speedup_commit_base")
     gsd_patch_base = opt_stats.get("gsd_speedup_patch_base")
 
     base_times = instance_report.get("base_times")
@@ -1768,6 +2001,13 @@ def build_improvement_summary(
     )
     vs_baseline_sig = False if no_code_changes else significant
 
+    harness_block = {
+        "tests_passed": tests_passed_count,
+        "tests_total": tests_total,
+        "opt_base_passed": instance_report.get("opt_base"),
+        "opt_commit_passed": instance_report.get("opt_commit"),
+    }
+
     return {
         "patch": {
             "patch_type": patch_meta.get("patch_type"),
@@ -1787,13 +2027,17 @@ def build_improvement_summary(
             "vs_expert": _slim_vs_expert(
                 commit_mean, patch_mean, gm_vs_expert=gm_patch_commit
             ),
+            "expert_vs_baseline": _slim_expert_vs_baseline(
+                base_mean, commit_mean, gm_commit_base
+            ),
+            "memory": _slim_memory(instance_report.get("memory_stats") or {}),
             "confidence": confidence_block,
-            "harness": {
-                "tests_passed": tests_passed_count,
-                "tests_total": tests_total,
-                "opt_base_passed": instance_report.get("opt_base"),
-                "opt_commit_passed": instance_report.get("opt_commit"),
-            },
+            "harness": harness_block,
+            "eval": _harness_eval_metrics(
+                instance_report, harness=harness_block
+            ),
+            **({"latency": lt} if (lt := _slim_latency(instance_report)) else {}),
+            **({"per_test": pt} if (pt := _slim_per_test(instance_report)) else {}),
         },
     }
 
@@ -1831,8 +2075,6 @@ _VERDICT_TO_INT = {
     "improved_below_expert": 4,
     "improved": 5,
 }
-_DIRECTION_TO_INT = {"unchanged": 0, "faster": 1, "slower": 2}
-
 
 def _task_index(instance_id: str) -> int:
     ids = _runner_module().list_instance_ids(benchmark_root())
@@ -1896,6 +2138,7 @@ def build_artemis_benchmark_payload_numeric(
     runtime = summary.get("runtime_s") or {}
     vs_base = summary.get("vs_baseline") or {}
     vs_expert = summary.get("vs_expert") or {}
+    expert_vs_baseline = summary.get("expert_vs_baseline") or {}
     conf = _numericize_confidence(summary.get("confidence"))
 
     out: dict[str, int | float] = {
@@ -1913,29 +2156,19 @@ def build_artemis_benchmark_payload_numeric(
         if value is not None:
             out[f"runtime_s_{key}"] = value
 
-    for src_key, dst_key in (
-        ("speedup", "vs_baseline_speedup"),
-        ("percent_faster", "vs_baseline_percent_faster"),
-    ):
-        value = _finite_scalar(vs_base.get(src_key))
-        if value is not None:
-            out[dst_key] = value
-    if vs_base.get("direction") is not None:
-        out["vs_baseline_direction"] = _DIRECTION_TO_INT.get(
-            str(vs_base.get("direction")), 0
-        )
+    value = _finite_scalar(vs_base.get("speedup"))
+    if value is not None:
+        out["vs_baseline_speedup"] = value
     if vs_base.get("significant") is not None:
         out["vs_baseline_significant"] = _bool_num(vs_base.get("significant"))
 
-    for src_key, dst_key in (
-        ("parity_percent", "vs_expert_parity_percent"),
-        ("runtime_ratio", "vs_expert_runtime_ratio"),
-    ):
-        value = _finite_scalar(vs_expert.get(src_key))
-        if value is not None:
-            out[dst_key] = value
-    if vs_expert.get("matches_expert") is not None:
-        out["vs_expert_matches_expert"] = _bool_num(vs_expert.get("matches_expert"))
+    value = _finite_scalar(vs_expert.get("parity_percent"))
+    if value is not None:
+        out["vs_expert_parity_percent"] = value
+
+    value = _finite_scalar(expert_vs_baseline.get("speedup"))
+    if value is not None:
+        out["expert_vs_baseline_speedup"] = value
 
     for src_key, dst_key in (
         ("speedup_ratio_estimate", "confidence_speedup_ratio_estimate"),
@@ -1951,6 +2184,80 @@ def build_artemis_benchmark_payload_numeric(
         if isinstance(value, (int, float)):
             out[dst_key] = value
 
+    out.update(
+        _numeric_eval_metrics(
+            summary.get("eval")
+            or _harness_eval_metrics(instance_report, harness=harness)
+        )
+    )
+
+    # GSO paper primary metrics (https://arxiv.org/abs/2505.23671)
+    # opt_at_1: Opt@1 at default threshold p=0.95 (agent achieves ≥95% of expert speedup)
+    out["opt_at_1"] = _bool_num(instance_report.get("opt_commit"))
+    opt_stats = instance_report.get("opt_stats") or {}
+    gm_patch_commit = opt_stats.get("gm_speedup_patch_commit") or 0.0
+    gm_patch_base = opt_stats.get("gm_speedup_patch_base") or 0.0
+    correctness = bool(instance_report.get("test_passed"))
+    # Patch must beat baseline by BASELINE_OPT_SPEEDUP (1.2x) to count as a real optimisation.
+    # Matching expert timing without improving over baseline is not an opt (e.g. unchanged code).
+    beats_baseline = round(gm_patch_base, 1) >= BASELINE_OPT_SPEEDUP
+    # opt_p_at_1_p{N}: Opt_p@1 for threshold p=N/100 (correctness + beats baseline + ≥p% of expert speed)
+    for suffix, threshold in [
+        ("p0", 0.0), ("p10", 0.1), ("p20", 0.2), ("p30", 0.3),
+        ("p40", 0.4), ("p50", 0.5), ("p60", 0.6), ("p70", 0.7),
+        ("p80", 0.8), ("p90", 0.9), ("p95", 0.95), ("p100", 1.0),
+    ]:
+        if threshold == 0.0:
+            out[f"opt_p_at_1_{suffix}"] = int(correctness)
+        else:
+            out[f"opt_p_at_1_{suffix}"] = int(correctness and beats_baseline and gm_patch_commit >= threshold)
+
+    # --- Runtime depth (variance / measurement quality) ---
+    time_stats_raw = instance_report.get("time_stats") or {}
+    base_std = _finite_scalar(time_stats_raw.get("base_std"))
+    patch_std = _finite_scalar(time_stats_raw.get("patch_std"))
+    per_test_patch_means = (time_stats_raw.get("per_test_means") or {}).get("patch") or []
+    if base_std is not None:
+        out["runtime_s_baseline_stddev"] = base_std
+    if patch_std is not None:
+        out["runtime_s_optimized_stddev"] = patch_std
+    finite_patch = [t for t in per_test_patch_means if t is not None and math.isfinite(t)]
+    if finite_patch:
+        out["runtime_s_optimized_min"] = round(min(finite_patch), 6)
+
+    # --- Gap to expert (absolute and multiplicative distance remaining) ---
+    opt_s = runtime.get("optimized")
+    exp_s = runtime.get("expert")
+    if (opt_s is not None and exp_s is not None
+            and math.isfinite(float(opt_s)) and math.isfinite(float(exp_s)) and float(exp_s) > 0):
+        gap = _finite_scalar(float(opt_s) - float(exp_s))
+        if gap is not None:
+            out["runtime_s_gap_to_expert"] = gap
+
+    # --- Memory metrics (-1 = not measured in this run) ---
+    mem_stats_raw = instance_report.get("memory_stats") or {}
+    if mem_stats_raw:
+        for role, key in (
+            ("baseline", "memory_mb_baseline"),
+            ("optimized", "memory_mb_optimized"),
+            ("expert", "memory_mb_expert"),
+        ):
+            v = mem_stats_raw.get(role) or mem_stats_raw.get(f"{role}_mb")
+            out[key] = round(float(v), 3) if v is not None else -1
+        mb_b, mb_o, mb_e = out.get("memory_mb_baseline", -1), out.get("memory_mb_optimized", -1), out.get("memory_mb_expert", -1)
+        out["vs_baseline_memory_reduction_pct"] = (
+            round((mb_b - mb_o) / mb_b * 100, 2) if mb_b > 0 and mb_o >= 0 else -1
+        )
+        out["vs_expert_memory_parity_pct"] = (
+            round(mb_e / mb_o * 100, 2) if mb_o > 0 and mb_e >= 0 else -1
+        )
+    else:
+        out["memory_mb_baseline"] = -1
+        out["memory_mb_optimized"] = -1
+        out["memory_mb_expert"] = -1
+        out["vs_baseline_memory_reduction_pct"] = -1
+        out["vs_expert_memory_parity_pct"] = -1
+
     return out
 
 
@@ -1962,6 +2269,25 @@ def build_artemis_test_payload(
 ) -> dict:
     opt_stats = instance_report.get("opt_stats", {})
     recorded_at = datetime.now(timezone.utc).isoformat()
+    harness_stub = {
+        "tests_passed": len(
+            (instance_report.get("time_stats") or {})
+            .get("per_test_means", {})
+            .get("base", [])
+            or instance_report.get("base_times")
+            or []
+        )
+        if instance_report.get("test_passed")
+        else 0,
+        "tests_total": len(
+            (instance_report.get("time_stats") or {})
+            .get("per_test_means", {})
+            .get("base", [])
+            or instance_report.get("base_times")
+            or []
+        ),
+    }
+    eval_metrics = _harness_eval_metrics(instance_report, harness=harness_stub)
     payload = {
         "instance_id": instance_id,
         "run_id": run_id,
@@ -1997,6 +2323,7 @@ def build_artemis_test_payload(
                 else None
             ),
         },
+        "eval": eval_metrics,
         "harness_report": str(
             instance_report_path(instance_id, run_id, model_name)
         ),
@@ -2024,6 +2351,11 @@ def write_benchmark_json(
     numeric_out.write_text(json.dumps(numeric_payload, indent=2))
     print(f"Wrote benchmark results (robust): {robust_out}")
     print(f"Wrote benchmark results (numeric): {numeric_out}")
+    task_out = workspace_dir(instance_id) / "output"
+    task_out.mkdir(parents=True, exist_ok=True)
+    (task_out / ARTEMIS_BENCHMARK_ROBUST_FILENAME).write_text(json.dumps(robust_payload, indent=2))
+    (task_out / ARTEMIS_BENCHMARK_FILENAME).write_text(json.dumps(numeric_payload, indent=2))
+    print(f"Wrote task output: {task_out}")
     write_comparison_summary(instance_id, run_id, model_name)
     summary_path = hub_summary_path()
     if summary_path.exists():
