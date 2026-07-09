@@ -1,19 +1,47 @@
-# Task: Optimise `BaseModel.__setattr__`
+You are optimizing `BaseModel.__setattr__` in this repository checkout.
+
+Edit files under `project/`. The unchanged baseline is in `baseline/` for reference.
+
+## Success criteria
+
+Your patch is scored by the GSO harness against **baseline** and a hidden **expert** reference. You may not reach expert speed — the goal is to get as close as possible while staying correct.
+
+After each attempt, check repo-root `artemis_results.json`:
+
+| Goal | Field | Target |
+|------|-------|--------|
+| Correct | `correctness_passed` | `1` |
+| Faster than baseline | `opt_base_passed` | `1` (≥1.2× GM speedup vs baseline) |
+| Near expert | `opt_commit_passed` or `vs_expert_parity_percent` | `1` or ≥95 |
+
+Use harness timings (`runtime_s_*`, `vs_baseline_speedup`) — not ad-hoc `time.time()`.
+
+## Workflow
+
+1. Read the benchmark and locate the hot path in `project/`.
+2. Make a focused change; preserve observable behavior.
+3. Run `./compile` → `./test` → `./benchmark`.
+4. Read `artemis_results.json`; iterate until gains plateau.
+
+## Issue
+
+```text
+Improve `__setattr__` performance of Pydantic models by caching setter functions (#10868)
+```
 
 ## Objective
 
 Speed up attribute assignment on pydantic v2 `BaseModel` instances by reducing the overhead of `__setattr__`.
 
-## Repository
+## Scope
 
-`pydantic/pydantic` — base commit `addf1f9` (see `metadata.json`)
-
-## Files to optimise
+Start on the hot path in these files (change others only if strictly necessary):
 
 - `pydantic/main.py`
-- `pydantic/_internal/_model_construction.py`
 
 ## Performance benchmark
+
+GSO scores this task with the harness below (`timeit` microbenchmarks with warm-up inside Docker).
 
 ```python
 import json, math, random, timeit
@@ -45,7 +73,7 @@ def experiment(instance):
             'inner': {'x': instance.inner.x, 'y': instance.inner.y}, '_priv': instance._priv}
 ```
 
-## What to look at
+## Hints
 
 `BaseModel.__setattr__` in `pydantic/main.py` dispatches attribute writes through a chain of `isinstance` checks and dictionary lookups on every single call:
 
@@ -60,6 +88,22 @@ With `validate_assignment=False` (the default), most of these checks are wasted 
 
 Consider how to avoid repeating the same dispatch logic on every call for a given attribute name.
 
-## Correctness constraint
+The issue explicitly mentions **caching setter functions** — the same attribute names (`a`, `b`, `c`, `inner.x`, …) are assigned 10,000 times each.
 
-All attribute types (model fields, private attributes, extra fields, cached properties) must continue to work correctly with and without `validate_assignment=True`.
+Resolve the dispatch path (field vs private vs extra vs property) once per attribute name, not on every `__setattr__` call.
+
+The benchmark uses `validate_assignment=False`; do not pay validation cost on the default hot path.
+
+## Anti-patterns
+
+- Optimizing import-time or cold paths the benchmark never executes.
+- Micro-opts that do not change the hot loop shown above.
+- Skipping `./test` — a fast but broken patch scores zero.
+- Reading or copying from `expert/` — that is the scoring reference, not input.
+
+## Constraints
+
+- **Drop-in replacement:** keep the public API under test unchanged (signatures, return types, errors, observable behavior).
+- Do not rename public symbols or change import paths callers rely on.
+- Do not add new required dependencies.
+- **Correctness:** All attribute types (model fields, private attributes, extra fields, cached properties) must continue to work correctly with and without `validate_assignment=True`.

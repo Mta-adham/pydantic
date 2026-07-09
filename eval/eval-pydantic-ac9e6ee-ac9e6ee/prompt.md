@@ -1,19 +1,51 @@
-# Task: Optimise `TypeAdapter.validate_python` for enum types
+You are optimizing `TypeAdapter.validate_python` in this repository checkout.
+
+Edit files under `project/`. The unchanged baseline is in `baseline/` for reference.
+
+## Success criteria
+
+Your patch is scored by the GSO harness against **baseline** and a hidden **expert** reference. You may not reach expert speed — the goal is to get as close as possible while staying correct.
+
+After each attempt, check repo-root `artemis_results.json`:
+
+| Goal | Field | Target |
+|------|-------|--------|
+| Correct | `correctness_passed` | `1` |
+| Faster than baseline | `opt_base_passed` | `1` (≥1.2× GM speedup vs baseline) |
+| Near expert | `opt_commit_passed` or `vs_expert_parity_percent` | `1` or ≥95 |
+
+Use harness timings (`runtime_s_*`, `vs_baseline_speedup`) — not ad-hoc `time.time()`.
+
+## Workflow
+
+1. Read the benchmark and locate the hot path in `project/`.
+2. Make a focused change; preserve observable behavior.
+3. Run `./compile` → `./test` → `./benchmark`.
+4. Read `artemis_results.json`; iterate until gains plateau.
+
+## Issue
+
+```text
+Move `enum` validation and serialization to Rust (#9064)
+
+Co-authored-by: sydney-runkle <sydneymarierunkle@gmail.com>
+Co-authored-by: Sydney Runkle <54324534+sydney-runkle@users.noreply.github.com>
+```
 
 ## Objective
 
 Speed up `TypeAdapter.validate_python` when the target type is a Python `enum.Enum` or `enum.IntEnum`.
 
-## Repository
+## Scope
 
-`pydantic/pydantic` — base commit `ac9e6ee` (see `metadata.json`)
-
-## Files to optimise
+Start on the hot path in these files (change others only if strictly necessary):
 
 - `pydantic/_internal/_std_types_schema.py`
 - `pydantic/json_schema.py`
 
 ## Performance benchmark
+
+GSO scores this task with the harness below (`timeit` microbenchmarks with warm-up inside Docker).
 
 ```python
 import json, random, timeit
@@ -52,12 +84,28 @@ def experiment(workloads):
     return results
 ```
 
-## What to look at
+## Hints
 
 `pydantic/_internal/_std_types_schema.py` — specifically how enum schemas are built for `pydantic-core`. The current implementation generates a Python-based validation schema for enums. Examine whether a more efficient validation path can be used, such as leveraging pydantic-core's built-in enum support if available in the version being used.
 
 Look at what core schema type is used for enum validation and whether a simpler, lower-overhead schema (e.g. direct value lookup) can replace the current approach.
 
-## Correctness constraint
+The issue says move enum validation to **Rust** (pydantic-core). Look for native `enum_schema` rather than Python `after_validator` wrappers on every value.
 
-Validation must correctly accept valid enum values, reject invalid ones with `ValidationError`, and respect any `_missing_` classmethod overrides on the enum class.
+The benchmark calls `validate_python` 20,000 times per enum adapter — per-value validation dominates, not one-time schema construction.
+
+If you change core schema shape, ensure JSON schema generation stays consistent (`json_schema.py` may need a matching handler).
+
+## Anti-patterns
+
+- Optimizing import-time or cold paths the benchmark never executes.
+- Micro-opts that do not change the hot loop shown above.
+- Skipping `./test` — a fast but broken patch scores zero.
+- Reading or copying from `expert/` — that is the scoring reference, not input.
+
+## Constraints
+
+- **Drop-in replacement:** keep the public API under test unchanged (signatures, return types, errors, observable behavior).
+- Do not rename public symbols or change import paths callers rely on.
+- Do not add new required dependencies.
+- **Correctness:** Validation must correctly accept valid enum values, reject invalid ones with `ValidationError`, and respect any `_missing_` classmethod overrides on the enum class.
