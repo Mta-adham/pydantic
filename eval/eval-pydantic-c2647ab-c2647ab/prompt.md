@@ -2,26 +2,12 @@ You are optimizing `TypeAdapter.validate_strings` in this repository checkout.
 
 Edit files under `project/`. The unchanged baseline is in `baseline/` for reference.
 
-## Success criteria
-
-Your patch is scored by the GSO harness against **baseline** and a hidden **expert** reference. You may not reach expert speed — the goal is to get as close as possible while staying correct.
-
-After each attempt, check repo-root `artemis_results.json`:
-
-| Goal | Field | Target |
-|------|-------|--------|
-| Correct | `correctness_passed` | `1` |
-| Faster than baseline | `opt_base_passed` | `1` (≥1.2× GM speedup vs baseline) |
-| Near expert | `opt_commit_passed` or `vs_expert_parity_percent` | `1` or ≥95 |
-
-Use harness timings (`runtime_s_*`, `vs_baseline_speedup`) — not ad-hoc `time.time()`.
-
 ## Workflow
 
 1. Read the benchmark and locate the hot path in `project/`.
 2. Make a focused change; preserve observable behavior.
 3. Run `./compile` → `./test` → `./benchmark`.
-4. Read `artemis_results.json`; iterate until gains plateau.
+4. Use the harness results to iterate until gains plateau.
 
 ## Issue
 
