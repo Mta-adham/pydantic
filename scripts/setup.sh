@@ -30,7 +30,18 @@ else
     .venv/bin/pip install -r requirements.txt
 fi
 
-.venv/bin/python -c "import gso, yaml; print('OK')"
+# Prefer the local monorepo harness (has peak-RSS memory capture) when present.
+GSO_SRC="$(cd "${ROOT}/../.." && pwd)"
+if [[ -f "${GSO_SRC}/pyproject.toml" ]] && grep -q 'name = "gsobench"' "${GSO_SRC}/pyproject.toml" 2>/dev/null; then
+    echo "Installing local gsobench from ${GSO_SRC} (editable, includes memory capture)..."
+    if command -v uv &>/dev/null; then
+        uv pip install -e "${GSO_SRC}"
+    else
+        .venv/bin/pip install -e "${GSO_SRC}"
+    fi
+fi
+
+.venv/bin/python -c "import gso, yaml; from gso.harness.grading import evalscript; assert 'GSO_MAXRSS_KB' in evalscript.MEM_HELPER_SETUP or 'Peak memory' in evalscript.MEM_HELPER_SETUP; print('OK (memory capture enabled)')"
 
 if [[ "$_SOURCED" -eq 1 ]]; then
     # shellcheck disable=SC1091

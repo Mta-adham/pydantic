@@ -482,6 +482,28 @@ def checkout_project_at_commit(instance, project_dir: Path) -> None:
             f"Not a git repository: {project_dir}\n"
             f"Run {prepare_command_hint()} to initialize it."
         )
+    # Already on the task base commit: skip force-checkout so uncommitted
+    # edits in project/ survive ./compile prepare and task re-activation.
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=project_dir,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    expected = subprocess.run(
+        ["git", "rev-parse", instance.base_commit],
+        cwd=project_dir,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if (
+        head.returncode == 0
+        and expected.returncode == 0
+        and head.stdout.strip() == expected.stdout.strip()
+    ):
+        return
     _checkout_git_commit(project_dir, instance.base_commit, label=instance.repo)
 
 
@@ -545,11 +567,19 @@ def setup_workspace(
         force = True
 
     if root.exists() and not force:
-        activate_task_for_editing(instance_id, checkout=True)
+        # Preserve uncommitted project/ edits when HEAD already matches the
+        # task base. Force-checkout only when switching to a different commit.
+        activate_task_for_editing(
+            instance_id,
+            checkout=not project_commit_matches_task(instance_id),
+        )
         meta_paths = json.loads(meta_path.read_text()).get("files", [])
         populate_expert_dir(instance, root, meta_paths)
         if os.environ.get("GSO_QUIET_PREPARE", "").strip() == "1":
-            print(f"Ready: {instance_id} — project/ synced, eval/{root.name}")
+            print(
+                f"Ready: {instance_id} — project/ ready "
+                f"(edits preserved), eval/{root.name}"
+            )
             return root
         print(f"Workspace already exists: {root}")
         print_benchmark_hub_edit_hints(instance_id, meta_paths)
@@ -1112,12 +1142,101 @@ def _read_instance_report_file(path: Path, instance_id: str) -> dict:
     return report[instance_id]
 
 
+def _mem_mean_mb(vals: list | None) -> float | None:
+    valid = [float(v) for v in (vals or []) if v is not None]
+    if not valid:
+        return None
+    return round(sum(valid) / len(valid), 3)
+
+
+def _parse_peak_memory_mb_from_log(content: str, start: str, end: str) -> list[float | None]:
+    """Parse 'Peak memory KB: N' blocks from harness test_output.txt."""
+    try:
+        segment = content.split(start, 1)[1].split(end, 1)[0]
+    except IndexError:
+        return []
+    results: list[float | None] = []
+    for block in re.split(r"^>>>>> Memory Test \d+\s*$", segment, flags=re.MULTILINE):
+        block = block.strip()
+        if not block:
+            continue
+        m = re.search(r"Peak memory KB:\s+(\d+)", block)
+        if not m:
+            continue
+        kb = float(m.group(1))
+        results.append(kb / 1024.0 if kb > 0 else None)
+    return results
+
+
+def enrich_memory_stats(
+    instance_report: dict,
+    *,
+    test_output_path: Path | None = None,
+) -> dict:
+    """Ensure memory_stats has baseline/optimized/expert MB when harness measured RSS.
+
+    Prefer report memory_stats; else aggregate base_mem/patch_mem/commit_mem; else
+    parse test_output.txt memory blocks (local harness emits these).
+    """
+    report = dict(instance_report)
+    mem = dict(report.get("memory_stats") or {})
+    has_values = any(
+        mem.get(k) is not None
+        for k in ("baseline_mb", "optimized_mb", "expert_mb", "baseline", "optimized", "expert")
+    )
+    if not has_values:
+        baseline = _mem_mean_mb(report.get("base_mem"))
+        optimized = _mem_mean_mb(report.get("patch_mem"))
+        expert = _mem_mean_mb(report.get("commit_mem"))
+        if any(v is not None for v in (baseline, optimized, expert)):
+            mem = {
+                "baseline_mb": baseline,
+                "optimized_mb": optimized,
+                "expert_mb": expert,
+            }
+            has_values = True
+    if not has_values and test_output_path is not None and test_output_path.is_file():
+        content = test_output_path.read_text(errors="replace")
+        mem = {
+            "baseline_mb": _mem_mean_mb(
+                _parse_peak_memory_mb_from_log(
+                    content, ">>>>> Start Base Memory", ">>>>> End Base Memory"
+                )
+            ),
+            "optimized_mb": _mem_mean_mb(
+                _parse_peak_memory_mb_from_log(
+                    content, ">>>>> Start Patch Memory", ">>>>> End Patch Memory"
+                )
+            ),
+            "expert_mb": _mem_mean_mb(
+                _parse_peak_memory_mb_from_log(
+                    content, ">>>>> Start Commit Memory", ">>>>> End Commit Memory"
+                )
+            ),
+        }
+        has_values = any(v is not None for v in mem.values())
+    if has_values:
+        # Normalise to *_mb keys used by Artemis export.
+        normalised = {
+            "baseline_mb": mem.get("baseline_mb", mem.get("baseline")),
+            "optimized_mb": mem.get("optimized_mb", mem.get("optimized")),
+            "expert_mb": mem.get("expert_mb", mem.get("expert")),
+        }
+        report["memory_stats"] = normalised
+    return report
+
+
 def load_instance_report(
     instance_id: str, run_id: str, model_name: str, *, command: str = "benchmark"
 ) -> dict:
     path = instance_report_path(instance_id, run_id, model_name)
     if path.is_file():
-        return _read_instance_report_file(path, instance_id)
+        report = _read_instance_report_file(path, instance_id)
+        return enrich_memory_stats(
+            report,
+            test_output_path=instance_log_dir(instance_id, run_id, model_name)
+            / "test_output.txt",
+        )
     log_dir = instance_log_dir(instance_id, run_id, model_name)
     run_log = log_dir / "run_instance.log"
     hint = (
@@ -1171,6 +1290,12 @@ def run_harness(
 ) -> str:
     instance = load_instance(instance_id)
     require_active_task(instance_id, action=action)
+    # Harness always evaluates current project/ (never a stale predictions.jsonl).
+    build_patch(
+        instance_id,
+        model_name=model_name,
+        placeholder_on_unchanged=True,
+    )
     run_id = run_id or f"local-{instance_id}"
     clean_harness_instance_logs(instance_id, run_id, model_name)
     cleanup_stale_harness_containers(instance_id)
@@ -1802,7 +1927,11 @@ def _harness_eval_metrics(
     )
 
     mem_stats = instance_report.get("memory_stats") or {}
-    memory_measured = bool(mem_stats)
+    mem_values = [
+        mem_stats.get(role) if mem_stats.get(role) is not None else mem_stats.get(f"{role}_mb")
+        for role in ("baseline", "optimized", "expert")
+    ]
+    memory_measured = any(v is not None for v in mem_values)
 
     metrics: dict = {
         "timing_source": "gso_harness",
@@ -2242,20 +2371,19 @@ def build_artemis_benchmark_payload_numeric(
 
     # --- Memory metrics (-1 = not measured in this run) ---
     mem_stats_raw = instance_report.get("memory_stats") or {}
-    if mem_stats_raw:
-        for role, key in (
-            ("baseline", "memory_mb_baseline"),
-            ("optimized", "memory_mb_optimized"),
-            ("expert", "memory_mb_expert"),
-        ):
-            v = mem_stats_raw.get(role) or mem_stats_raw.get(f"{role}_mb")
-            out[key] = round(float(v), 3) if v is not None else -1
-        mb_b, mb_o, mb_e = out.get("memory_mb_baseline", -1), out.get("memory_mb_optimized", -1), out.get("memory_mb_expert", -1)
+    mb_b = mem_stats_raw.get("baseline_mb", mem_stats_raw.get("baseline"))
+    mb_o = mem_stats_raw.get("optimized_mb", mem_stats_raw.get("optimized"))
+    mb_e = mem_stats_raw.get("expert_mb", mem_stats_raw.get("expert"))
+    if any(v is not None for v in (mb_b, mb_o, mb_e)):
+        out["memory_mb_baseline"] = round(float(mb_b), 3) if mb_b is not None else -1
+        out["memory_mb_optimized"] = round(float(mb_o), 3) if mb_o is not None else -1
+        out["memory_mb_expert"] = round(float(mb_e), 3) if mb_e is not None else -1
+        b, o, e = out["memory_mb_baseline"], out["memory_mb_optimized"], out["memory_mb_expert"]
         out["vs_baseline_memory_reduction_pct"] = (
-            round((mb_b - mb_o) / mb_b * 100, 2) if mb_b > 0 and mb_o >= 0 else -1
+            round((b - o) / b * 100, 2) if b > 0 and o >= 0 else -1
         )
         out["vs_expert_memory_parity_pct"] = (
-            round(mb_e / mb_o * 100, 2) if mb_o > 0 and mb_e >= 0 else -1
+            round(e / o * 100, 2) if o > 0 and e >= 0 else -1
         )
     else:
         out["memory_mb_baseline"] = -1
@@ -2398,6 +2526,12 @@ def benchmark_patch(
     reuse_report: bool = False,
 ) -> Path:
     require_active_task(instance_id, action="benchmark")
+    # Always re-diff project/ → predictions so harness never uses a stale patch.
+    build_patch(
+        instance_id,
+        model_name=model_name,
+        placeholder_on_unchanged=True,
+    )
     run_id = run_id or f"benchmark-{instance_id}"
     report_path = instance_report_path(instance_id, run_id, model_name)
     if not reuse_report or not report_path.is_file():
@@ -2427,6 +2561,12 @@ def test_patch(
     rerun: bool = False,
 ) -> Path:
     require_active_task(instance_id, action="test")
+    # Always re-diff project/ → predictions so harness never uses a stale patch.
+    build_patch(
+        instance_id,
+        model_name=model_name,
+        placeholder_on_unchanged=True,
+    )
     run_id, needs_run = resolve_test_harness_run(
         instance_id,
         model_name,
