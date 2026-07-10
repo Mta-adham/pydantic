@@ -534,14 +534,20 @@ def setup_workspace(
     root = workspace_dir(instance_id)
     proj = project_root()
 
+    meta_path = metadata_path(instance_id)
+    # Incomplete eval/ (dir exists, no metadata.json) is common when Artemis
+    # pre-creates the folder or a prior compile aborted. Treat as unprepared.
+    if root.exists() and not force and not meta_path.exists():
+        print(
+            f"Incomplete eval workspace (missing metadata.json): {root}\n"
+            f"Rebuilding…"
+        )
+        force = True
+
     if root.exists() and not force:
         activate_task_for_editing(instance_id, checkout=True)
-        meta_path = metadata_path(instance_id)
-        if meta_path.exists():
-            meta_paths = json.loads(meta_path.read_text()).get("files", [])
-            populate_expert_dir(instance, root, meta_paths)
-        else:
-            meta_paths = []
+        meta_paths = json.loads(meta_path.read_text()).get("files", [])
+        populate_expert_dir(instance, root, meta_paths)
         if os.environ.get("GSO_QUIET_PREPARE", "").strip() == "1":
             print(f"Ready: {instance_id} — project/ synced, eval/{root.name}")
             return root

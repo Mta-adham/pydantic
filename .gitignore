@@ -1,11 +1,14 @@
-# Per-task eval workspaces — generated runtime artifacts are ignored, prompt.md is tracked
+# Per-task eval workspaces — only benchmark.yaml (+ optional output/) are tracked.
+# prompt.md and OPTIMIZATION.md are runtime / Artemis-injected, not committed.
 eval/*/baseline/
 eval/*/expert/
 eval/*/metadata.json
 eval/*/patch.diff
 eval/*/predictions.jsonl
+eval/*/prompt.md
+eval/*/OPTIMIZATION.md
 
-# Cached HuggingFace instance payloads (benchmark defs are tracked)
+# Cached HuggingFace instance payloads
 eval/*/instance.json
 
 # Latest benchmark copy at hub root (regenerated each run; per-task copies in eval/*/output/ are tracked)

@@ -195,15 +195,13 @@ pydantic/
   test               GSO harness correctness eval
   .gso_task_id       active GSO task + pinned eval image digest
   scripts/           harness glue (workflow, env, hub)
-  benchmarks/        per-task definitions (committed):
-                       benchmark.yaml   GSO image pin + task metadata
-                       OPTIMIZATION.md  baseline → expert instructions (copied to eval on compile)
-  eval/<task>/       local workspace only:
-                       baseline/   frozen reference (do not edit)
-                       expert/     expert reference (do not edit)
-                                     OPTIMIZATION.md — copy of benchmarks/<slug>/OPTIMIZATION.md
-                       metadata.json
-                       patch.diff + predictions.jsonl  (from compile)
+  eval/<task>/       per-task dir:
+                       benchmark.yaml   committed (image pin + task metadata)
+                       prompt.md        not committed (Artemis / local)
+                       OPTIMIZATION.md  not committed (Artemis / local)
+                       baseline/        runtime (gitignored)
+                       expert/          runtime (gitignored)
+                       metadata.json, patch.diff, predictions.jsonl  (gitignored)
   logs/              GSO harness logs (gitignored)
 ```
 
