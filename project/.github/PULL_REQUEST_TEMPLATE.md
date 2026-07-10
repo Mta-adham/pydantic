@@ -1,5 +1,6 @@
 <!-- Thank you for your contribution! -->
 <!-- Unless your change is trivial, please create an issue to discuss the change before creating a PR -->
+<!-- See https://pydantic-docs.helpmanual.io/contributing/ for help on Contributing -->
 
 ## Change Summary
 
@@ -7,12 +8,12 @@
 
 ## Related issue number
 
-<!-- WARNING: please use "fix #123" style references so the issue is closed when this PR is merged. -->
+<!-- Are there any issues opened that will be resolved by merging this change? -->
 
 ## Checklist
 
-* [ ] The pull request title is a good summary of the changes - it will be used in the changelog
 * [ ] Unit tests for the changes exist
-* [ ] Tests pass on CI
+* [ ] Tests pass on CI and coverage remains at 100%
 * [ ] Documentation reflects the changes where applicable
-* [ ] My PR is ready to review, **please add a comment including the phrase "please review" to assign reviewers**
+* [ ] `changes/<pull request or issue id>-<github username>.md` file added describing change
+  (see [changes/README.md](https://github.com/samuelcolvin/pydantic/blob/master/changes/README.md) for details)

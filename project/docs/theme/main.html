@@ -1,11 +1,9 @@
 {% extends "base.html" %}
-<!-- start announce block -->
-{% block announce %}
-  {% include 'announce.html' ignore missing %}
-{% endblock %}
-<!-- end announce block -->
+
 {% block content %}
+  {# no ad on the home page #}
+  {% if not page.is_index %}
+    <div id="bsa-cpc"></div>
+  {% endif %}
   {{ super() }}
-  <script src="/flarelytics/client.js"></script>
-  {% include 'mkdocs_run_deps.html' ignore missing %}
 {% endblock %}
