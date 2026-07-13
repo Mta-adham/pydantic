@@ -84,6 +84,8 @@ for task in "${TASK_IDS[@]}"; do
                 --placeholder-on-unchanged || failures+=("$task")
             ;;
         benchmark)
+            # Prepare syncs project/ to the task commit (preserving edits when HEAD matches).
+            run_prepare "$task" 1 || { failures+=("$task"); continue; }
             if pydantic_workflow benchmark "$task" "${EXTRA[@]}"; then
                 show_summary "$task"
             else
@@ -91,6 +93,7 @@ for task in "${TASK_IDS[@]}"; do
             fi
             ;;
         test)
+            run_prepare "$task" 1 || { failures+=("$task"); continue; }
             pydantic_workflow test "$task" "${EXTRA[@]}" || failures+=("$task")
             ;;
         reset)

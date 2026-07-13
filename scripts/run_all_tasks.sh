@@ -82,8 +82,14 @@ import yaml
 
 iid, hub_s = sys.argv[1:3]
 hub = Path(hub_s)
-slug = iid.split("__", 1)[-1]
-defn = yaml.safe_load((hub / "benchmarks" / slug / "benchmark.yaml").read_text())
+defn = None
+for path in sorted((hub / "eval").glob("*/benchmark.yaml")):
+    data = yaml.safe_load(path.read_text()) or {}
+    if data.get("instance_id") == iid:
+        defn = data
+        break
+if defn is None:
+    raise SystemExit(f"No eval/*/benchmark.yaml for {iid}")
 expected_digest = defn["target"]["digest"]
 
 robust = json.loads((hub / "artemis_results_robust.json").read_text())

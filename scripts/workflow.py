@@ -183,7 +183,7 @@ def gso_version() -> str:
 
 
 def verify_instance_image(instance_id: str, *, pull: bool = True) -> dict[str, Any]:
-    """Require pinned digest from benchmarks/*/benchmark.yaml before harness runs."""
+    """Require pinned digest from eval/*/benchmark.yaml before harness runs."""
     verified = _runner_module().verify_benchmark_image(
         benchmark_root(), instance_id, pull=pull
     )
@@ -546,6 +546,23 @@ def sync_optimization_guide(instance_id: str, expert_dir: Path) -> None:
     print(f"Wrote optimization guide: {dst}")
 
 
+def clear_regenerable_workspace(root: Path) -> None:
+    """Remove regenerable compile artifacts without deleting pinned task assets.
+
+    Preserves benchmark.yaml, instance.json, prompt.md, OPTIMIZATION.md, etc.
+    """
+    for name in ("baseline", "expert", "output"):
+        path = root / name
+        if path.is_dir():
+            shutil.rmtree(path)
+        elif path.is_file():
+            path.unlink()
+    for name in ("metadata.json", "patch.diff", "predictions.jsonl"):
+        path = root / name
+        if path.is_file():
+            path.unlink()
+
+
 def setup_workspace(
     instance_id: str,
     files: list[str] | None = None,
@@ -586,7 +603,8 @@ def setup_workspace(
         return root
 
     if root.exists():
-        shutil.rmtree(root)
+        clear_regenerable_workspace(root)
+    root.mkdir(parents=True, exist_ok=True)
 
     baseline_dir = root / "baseline"
     baseline_dir.mkdir(parents=True)
@@ -1282,14 +1300,15 @@ def run_harness(
     *,
     model_name: str = "local-edit",
     run_id: str | None = None,
-    timeout: int = 1800,
+    timeout: int | None = None,
     max_workers: int = 1,
     pull_image: bool = True,
     ephemeral_image: bool = True,
     action: str = "benchmark",
 ) -> str:
     instance = load_instance(instance_id)
-    require_active_task(instance_id, action=action)
+    # Checkout on switch so multi-task ./benchmark A B uses the right project/ commit.
+    require_active_task(instance_id, action=action, checkout_on_switch=True)
     # Harness always evaluates current project/ (never a stale predictions.jsonl).
     build_patch(
         instance_id,
@@ -1312,6 +1331,10 @@ def run_harness(
         verify_instance_image(instance_id, pull=False)
     tag_instance_image_for_harness(instance)
 
+    runner = _runner_module()
+    if timeout is None:
+        timeout = runner.timeout_for_instance(benchmark_root(), instance_id)
+
     harness_args = [
         "--dataset_name",
         "gso-bench/gso",
@@ -1333,11 +1356,12 @@ def run_harness(
     print("Running GSO harness...")
     try:
         env = os.environ.copy()
-        defn = _runner_module().load_benchmark_def(benchmark_root(), instance_id)
+        defn = runner.load_benchmark_def(benchmark_root(), instance_id)
         timing_iters = (defn.get("runner") or {}).get("timing_iterations")
         if timing_iters and str(timing_iters).isdigit() and int(timing_iters) > 0:
             env["GSO_TIMING_ITERS"] = str(int(timing_iters))
             print(f"Timing iterations: {timing_iters} (from benchmark.yaml)")
+        print(f"Harness timeout: {timeout}s")
         proc = subprocess.run(cmd, cwd=harness_cwd, text=True, check=False, env=env)
         if proc.returncode != 0:
             raise SystemExit(proc.returncode)
@@ -1662,21 +1686,52 @@ def _speedup_direction(speedup: float | None) -> str | None:
     return "faster" if speedup > 1.0 else "slower"
 
 
-def _is_placeholder_patch(instance_id: str) -> bool:
-    """True when patch.diff is only the compile-time gso-placeholder comment marker."""
-    patch_path = workspace_dir(instance_id) / "patch.diff"
-    if not patch_path.exists():
-        return False
-    text = patch_path.read_text()
-    if not any(marker in text for marker in GSO_PLACEHOLDER_MARKERS):
-        return False
-    changed = [
+def _patch_changed_lines(patch_text: str) -> list[str]:
+    return [
         line
-        for line in text.splitlines()
-        if line.startswith(("+", "-"))
-        and not line.startswith(("+++", "---"))
+        for line in patch_text.splitlines()
+        if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
     ]
-    return len(changed) <= 2
+
+
+def _is_placeholder_only_patch_text(patch_text: str) -> bool:
+    """True when patch is empty or only adds/removes gso-placeholder markers."""
+    if not patch_text or not patch_text.strip():
+        return True
+    changed = _patch_changed_lines(patch_text)
+    if not changed:
+        return True
+    for line in changed:
+        body = line[1:].strip()
+        if not body:
+            continue
+        if not any(marker in body for marker in GSO_PLACEHOLDER_MARKERS):
+            return False
+    return True
+
+
+def _load_evaluated_patch_text(instance_id: str) -> str:
+    """Patch text the harness evaluates (predictions.jsonl), else patch.diff."""
+    pred = predictions_path(instance_id)
+    if pred.is_file():
+        raw = pred.read_text().strip()
+        if raw:
+            try:
+                data = json.loads(raw.splitlines()[0])
+            except json.JSONDecodeError:
+                data = {}
+            patch = data.get("model_patch")
+            if isinstance(patch, str):
+                return patch
+    patch_path = workspace_dir(instance_id) / "patch.diff"
+    if patch_path.is_file():
+        return patch_path.read_text()
+    return ""
+
+
+def _is_placeholder_patch(instance_id: str) -> bool:
+    """True when the evaluated patch is only the compile-time gso-placeholder marker."""
+    return _is_placeholder_only_patch_text(_load_evaluated_patch_text(instance_id))
 
 
 def _workspace_files_unchanged(instance_id: str) -> bool:
@@ -1702,9 +1757,12 @@ def _workspace_files_unchanged(instance_id: str) -> bool:
 
 
 def _patch_metadata(instance_id: str) -> dict:
-    placeholder = _is_placeholder_patch(instance_id)
-    unchanged = _workspace_files_unchanged(instance_id)
-    if placeholder or unchanged:
+    """Classify the patch that was / will be evaluated — not the live workspace tree.
+
+    Artemis (and local reset) can leave project/ matching baseline/ after the harness
+    already ran a real model_patch. Workspace equality must not override patch content.
+    """
+    if _is_placeholder_patch(instance_id):
         return {"patch_type": "unchanged", "code_changes": False}
     return {"patch_type": "real_edit", "code_changes": True}
 
@@ -1829,7 +1887,12 @@ def _improvement_verdict(
 ) -> str:
     if gm_patch_base is None:
         return "unavailable"
-    if within_noise or (is_placeholder and not significant):
+    # Placeholder / no real edits: any timing delta is noise, not an improvement.
+    if is_placeholder:
+        if gm_patch_commit is not None and gm_patch_commit >= EXPERT_MATCH_THRESHOLD:
+            return "no_change_near_expert"
+        return "no_change"
+    if within_noise:
         if gm_patch_commit is not None and gm_patch_commit >= EXPERT_MATCH_THRESHOLD:
             return "no_change_near_expert"
         return "no_change"
@@ -1857,11 +1920,11 @@ def _improvement_headline(
         return "Benchmark comparison unavailable."
 
     if _patch_is_placeholder(patch_meta) or not patch_meta.get("code_changes", True):
-        if within_noise or not significant:
-            return (
-                "No measurable improvement vs baseline. "
-                "Likely measurement noise (unchanged code)."
-            )
+        # Timings without a real patch are harness noise, even if the CI looks "significant".
+        return (
+            "No measurable improvement vs baseline. "
+            "Likely measurement noise (unchanged code)."
+        )
 
     if within_noise or not significant:
         near_expert = (
@@ -2422,11 +2485,18 @@ def build_artemis_test_payload(
         ),
     }
     eval_metrics = _harness_eval_metrics(instance_report, harness=harness_stub)
+    patch_meta = _patch_metadata(instance_id)
+    improvement = build_improvement_summary(
+        instance_report, instance_id=instance_id
+    )
     payload = {
         "instance_id": instance_id,
         "run_id": run_id,
         "model_name": model_name,
         "recorded_at": recorded_at,
+        "code_changes": patch_meta.get("code_changes"),
+        "patch_type": patch_meta.get("patch_type"),
+        "verdict": improvement.get("verdict"),
         "patch_exists": instance_report.get("patch_exists"),
         "patch_successfully_applied": instance_report.get(
             "patch_successfully_applied"
@@ -2519,13 +2589,13 @@ def benchmark_patch(
     *,
     model_name: str = "local-edit",
     run_id: str | None = None,
-    timeout: int = 1800,
+    timeout: int | None = None,
     max_workers: int = 1,
     pull_image: bool = True,
     ephemeral_image: bool = True,
     reuse_report: bool = False,
 ) -> Path:
-    require_active_task(instance_id, action="benchmark")
+    require_active_task(instance_id, action="benchmark", checkout_on_switch=True)
     # Always re-diff project/ → predictions so harness never uses a stale patch.
     build_patch(
         instance_id,
@@ -2534,7 +2604,12 @@ def benchmark_patch(
     )
     run_id = run_id or f"benchmark-{instance_id}"
     report_path = instance_report_path(instance_id, run_id, model_name)
-    if not reuse_report or not report_path.is_file():
+    if reuse_report and report_path.is_file():
+        print(
+            "Warning: --reuse-report skips harness; timings come from an existing "
+            "report while patch.diff was rebuilt from current project/."
+        )
+    elif not reuse_report or not report_path.is_file():
         run_harness(
             instance_id,
             model_name=model_name,
@@ -2553,14 +2628,14 @@ def test_patch(
     *,
     model_name: str = "local-edit",
     run_id: str | None = None,
-    timeout: int = 1800,
+    timeout: int | None = None,
     max_workers: int = 1,
     pull_image: bool = True,
     ephemeral_image: bool = True,
     from_benchmark: bool = False,
     rerun: bool = False,
 ) -> Path:
-    require_active_task(instance_id, action="test")
+    require_active_task(instance_id, action="test", checkout_on_switch=True)
     # Always re-diff project/ → predictions so harness never uses a stale patch.
     build_patch(
         instance_id,
@@ -2633,7 +2708,12 @@ def main() -> None:
     benchmark.add_argument("instance_id")
     benchmark.add_argument("--model-name", default="local-edit")
     benchmark.add_argument("--run-id")
-    benchmark.add_argument("--timeout", type=int, default=1800)
+    benchmark.add_argument(
+        "--timeout",
+        type=int,
+        default=None,
+        help="Harness timeout seconds (default: runner.timeout_seconds from benchmark.yaml)",
+    )
     benchmark.add_argument("--max-workers", type=int, default=1)
     benchmark.add_argument("--no-pull", action="store_true")
     benchmark.add_argument(
@@ -2654,7 +2734,12 @@ def main() -> None:
     test_cmd.add_argument("instance_id")
     test_cmd.add_argument("--model-name", default="local-edit")
     test_cmd.add_argument("--run-id")
-    test_cmd.add_argument("--timeout", type=int, default=1800)
+    test_cmd.add_argument(
+        "--timeout",
+        type=int,
+        default=None,
+        help="Harness timeout seconds (default: runner.timeout_seconds from benchmark.yaml)",
+    )
     test_cmd.add_argument("--max-workers", type=int, default=1)
     test_cmd.add_argument("--no-pull", action="store_true")
     test_cmd.add_argument(

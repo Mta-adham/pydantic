@@ -30,8 +30,14 @@ import yaml
 
 iid, hub_s = sys.argv[1:3]
 hub = Path(hub_s)
-slug = iid.split("__", 1)[-1]
-defn = yaml.safe_load((hub / "benchmarks" / slug / "benchmark.yaml").read_text())
+defn = None
+for path in sorted((hub / "eval").glob("*/benchmark.yaml")):
+    data = yaml.safe_load(path.read_text()) or {}
+    if data.get("instance_id") == iid:
+        defn = data
+        break
+if defn is None:
+    raise SystemExit(f"No eval/*/benchmark.yaml for {iid}")
 expected_digest = defn["target"]["digest"]
 
 robust = json.loads((hub / "artemis_results_robust.json").read_text())
@@ -46,6 +52,10 @@ if got != expected_digest:
     errors.append(f"digest {got} != {expected_digest}")
 if tests.get("instance_id") != iid:
     errors.append(f"tests instance_id={tests.get('instance_id')!r}")
+if "code_changes" not in tests:
+    errors.append("tests_artemis_results.json missing code_changes")
+if "verdict" not in tests:
+    errors.append("tests_artemis_results.json missing verdict")
 if not numeric:
     errors.append("empty artemis_results.json")
 if not numeric.get("tests_total"):
