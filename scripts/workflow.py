@@ -837,30 +837,33 @@ def docker_image_name(instance) -> str:
 
 def cleanup_stale_harness_containers(instance_id: str) -> None:
     """Remove leftover GSO eval containers that block re-runs for this task."""
-    proc = subprocess.run(
-        [
-            "docker",
-            "ps",
-            "-aq",
-            "--filter",
-            f"name=gso.eval.{instance_id}",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    for cid in proc.stdout.splitlines():
-        cid = cid.strip()
-        if not cid:
-            continue
-        rm = subprocess.run(
-            ["docker", "rm", "-f", cid],
+    # Match both "gso.eval.<instance_id>.*" and lowercase image-style names.
+    filters = [
+        f"name=gso.eval.{instance_id}",
+        f"name=gso.eval.{instance_id.lower()}",
+        f"name={instance_id}",
+    ]
+    seen: set[str] = set()
+    for name_filter in filters:
+        proc = subprocess.run(
+            ["docker", "ps", "-aq", "--filter", name_filter],
             capture_output=True,
             text=True,
             check=False,
         )
-        if rm.returncode == 0:
-            print(f"Removed stale harness container: {cid[:12]}")
+        for cid in proc.stdout.splitlines():
+            cid = cid.strip()
+            if not cid or cid in seen:
+                continue
+            seen.add(cid)
+            rm = subprocess.run(
+                ["docker", "rm", "-f", cid],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if rm.returncode == 0:
+                print(f"Removed stale harness container: {cid[:12]}")
 
 
 def remove_docker_image(image: str) -> None:

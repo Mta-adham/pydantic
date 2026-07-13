@@ -2,9 +2,10 @@
 
 Artemis-importable repo for pydantic GSO tasks. **Edit only `project/`**.
 
-`./benchmark` and `./test` call the **GSO harness** (`gsobench` → Docker image
-`slimshetty/gso:...`). There is no separate eval system — the `eval/` folder is
-only a **local workspace** (frozen `baseline/` + reference `expert/` for patching).
+`./compile`, `./benchmark`, and `./test` all rebuild a patch from current
+`project/` edits vs frozen `eval/<task>/baseline/`, then (for benchmark/test)
+run the **GSO Docker harness** for that task’s pinned image. The harness does
+**not** mount `project/` — it applies your `predictions.jsonl` patch inside Docker.
 
 ## Setup
 
@@ -13,36 +14,62 @@ git clone git@github.com:Mta-adham/pydantic.git
 cd pydantic
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+# or: source scripts/setup.sh
 ```
 
 **Requires:** Python 3.12+, Docker, `HF_TOKEN` in `.env` (first-time dataset fetch only)
 
+```bash
+bash scripts/images.sh pull-images    # once per machine / after digest change
+bash scripts/images.sh verify-images
+```
+
 ## Workflow
 
 ```bash
-./compile pydantic__pydantic-4a09447   # sets .gso_task_id + syncs project/
+./compile pydantic__pydantic-4a09447   # sets .gso_task_id + syncs project/ to task base
 # edit project/pydantic/*.py (see Tasks table)
-./benchmark                            # re-diffs project/ then GSO harness → artemis_results.json
-./test                                 # re-diffs project/; tests_artemis_results.json (reuses report if present)
+./benchmark                            # re-diffs project/ → Docker harness → results
+./test                                 # re-diffs project/; correctness JSON (reuses report if present)
 ```
+
+After editing `project/`, run `./benchmark` directly — a second `./compile` is optional.
+Uncommitted edits are preserved when `project/` is already on the task base commit
+(same-task re-runs do not wipe your work).
+
+### Success criteria (read `summary.txt`)
+
+| Gate | Meaning |
+|------|---------|
+| `code_changes: yes` | Real patch evaluated (not placeholder) |
+| `opt_base_passed` | ≥ ~20% faster than baseline (weak gate) |
+| `matches_expert` / `opt_commit` | ≥ ~95% of expert speed (full success) |
+| `correctness_passed` | Functional tests passed |
+
+A ~1.2× win with low expert parity is only partial; many tasks need ~4–5× vs baseline
+to match expert.
 
 ## Commands
 
 | Command | What it does |
 |---------|----------------|
-| `./compile [task]` | Sync `project/` + build `patch.diff` |
-| `./benchmark [task]` | Re-diff `project/` → patch, then GSO harness perf eval → `artemis_results.json` |
-| `./test [task]` | Re-diff `project/` → patch; correctness → `tests_artemis_results.json` (reuses `test-*` or `benchmark-*` report if present; `--rerun` for a fresh test harness) |
+| `./compile [task]` | Sync `project/` + build `patch.diff` / `predictions.jsonl` |
+| `./benchmark [task]` | Prepare + re-diff `project/` → patch → GSO perf eval → `artemis_results*.json` + `summary.txt` |
+| `./test [task]` | Prepare + re-diff `project/` → correctness → `tests_artemis_results.json` (reuses `test-*` or `benchmark-*` report if present; `--rerun` for a fresh test harness) |
 | `./reset [task]` | Restore `project/` from `baseline/` (discard edits) |
 
 Omit the task ID to use the active task (`.gso_task_id`).
+
+Useful flags: `./benchmark --keep-image` (skip image delete), `--no-pull`, `--reuse-report`
+(warns: timings may not match a newly rebuilt patch).
 
 **Maintenance scripts** (`scripts/`):
 
 | Script | What it does |
 |--------|----------------|
 | `bash scripts/run_all_tasks.sh` | Full E2E: all tasks compile → benchmark → test + validation |
-| `bash scripts/test_project_patch_refresh.sh` | Verify every task: `./compile` preserves `project/` edits and puts them in the harness patch |
+| `bash scripts/test_all_commands.sh` | Same style E2E with output checks |
+| `bash scripts/test_project_patch_refresh.sh` | Verify every task: edits survive compile and land in the harness patch |
 | `bash scripts/images.sh pull-images [task]` | Pull pinned Docker images |
 | `bash scripts/images.sh verify-images [task]` | Verify local images match `benchmark.yaml` digests |
 | `bash scripts/images.sh pin-images [task]` | Update digest in `benchmark.yaml` after image rebuild |
@@ -55,7 +82,16 @@ Omit the task ID to use the active task (`.gso_task_id`).
 | `artemis_results.json` | Flat **numeric-only** (for Artemis import) |
 | `artemis_results_robust.json` | Nested JSON with string labels and explanations |
 | `summary.txt` | Human-readable summary |
-| `tests_artemis_results.json` | Correctness / pass-fail (string IDs) |
+| `tests_artemis_results.json` | Correctness + `code_changes` / `verdict` |
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| Docker `409` container name conflict | Stale harness container; re-run `./benchmark` (cleanup is automatic) or `docker rm -f $(docker ps -aq --filter name=gso.eval.)` |
+| `code_changes: no` after editing | Edit wasn’t under that task’s files in `project/`, or patch is placeholder-only |
+| Missing `:latest` image | `bash scripts/images.sh pull-images <task>` then `./benchmark --keep-image` |
+| Wrong task / wrong commit | `./compile <task_id>` before editing |
 
 ## `artemis_results.json` encodings
 
@@ -175,8 +211,8 @@ noise: the confidence interval is wide enough that “no real change” remains 
 
 ## Tasks
 
-Index order matches `task` in `artemis_results.json` (sorted `benchmarks/*/`
-slug). String task IDs appear in `artemis_results_robust.json` and `summary.txt`.
+Index order matches `task` in `artemis_results.json` (sorted `eval/*/` dirs).
+String task IDs appear in `artemis_results_robust.json` and `summary.txt`.
 
 | Index | Task ID | API | File(s) to optimize |
 |------:|---------|-----|---------------------|
@@ -190,13 +226,13 @@ slug). String task IDs appear in `artemis_results_robust.json` and `summary.txt`
 ```text
 pydantic/
   project/           edit pydantic source here (agent-visible)
-  compile            build patch from project/ edits
-  benchmark          GSO harness performance eval
-  test               GSO harness correctness eval
+  compile            sync task + build patch from project/
+  benchmark          re-diff project/ + GSO harness performance eval
+  test               re-diff project/ + GSO harness correctness eval
   .gso_task_id       active GSO task + pinned eval image digest
   scripts/           harness glue (workflow, env, hub)
   eval/<task>/       per-task dir:
-                       benchmark.yaml   committed (image pin + task metadata)
+                       benchmark.yaml   committed (image pin + timeout + task metadata)
                        prompt.md        not committed (Artemis / local)
                        OPTIMIZATION.md  not committed (Artemis / local)
                        baseline/        runtime (gitignored)
@@ -206,4 +242,4 @@ pydantic/
 ```
 
 Do not edit `eval/*/baseline/` or `eval/*/expert/`. Grading runs inside GSO's
-public Docker images, not from files in this repo.
+public Docker images from your patch, not by mounting this repo’s `project/`.
