@@ -7,6 +7,25 @@ Artemis-importable repo for pydantic GSO tasks. **Edit only `project/`**.
 run the **GSO Docker harness** for that task’s pinned image. The harness does
 **not** mount `project/` — it applies your `predictions.jsonl` patch inside Docker.
 
+### Protecting `project/`
+
+`project/` is the **evaluation workspace**: the files you optimize, and the tree
+that is diffed into the patch Docker applies. Treat it as sacred.
+
+| Do | Don’t |
+|----|--------|
+| Edit only the active task’s files under `project/` | Hand-edit `eval/*/baseline/` or expect Docker to mount `project/` |
+| `./compile <one-task>` then keep working on that task | `./compile --all` / multi-task `./benchmark A B …` while you have uncommitted edits |
+| Commit or copy edits before switching tasks | Assume task switches preserve work across different base commits |
+
+**Task switches check out `project/` to that task’s `base_commit`.** Same-task
+re-runs keep uncommitted edits when HEAD already matches. Switching tasks (or
+`--all`) can discard uncommitted edits and rewrite the vendored tree the hub
+tracks under `project/` (only `project/.git/` is gitignored).
+
+Use `bash scripts/run_all_tasks.sh` only for maintenance/CI, not while iterating
+on an optimization.
+
 ## Setup
 
 ```bash
@@ -54,15 +73,16 @@ to match expert.
 
 | Command | What it does |
 |---------|----------------|
-| `./compile [task\|--all]` | Sync `project/` + build `patch.diff` / `predictions.jsonl` |
+| `./compile [task\|--all]` | Sync `project/` + build `patch.diff` / `predictions.jsonl`. **`--all` checkouts every task base into `project/`** — save edits first |
 | `./benchmark [task\|--all]` | Prepare + re-diff `project/` → patch → GSO perf eval → `artemis_results*.json` + `summary.txt` |
 | `./test [task\|--all]` | Prepare + re-diff `project/` → correctness → `tests_artemis_results.json` (reuses a prior report **only if** its patch still matches current `project/`; otherwise re-runs Docker; `--rerun` forces a fresh run) |
-| `./reset [task]` | Restore `project/` from `baseline/` (discard edits) |
+| `./reset [task]` | Restore task files in `project/` from `baseline/` (discard edits for those files) |
 
-Omit the task ID to use the active task (`.gso_task_id`).
+Omit the task ID to use the active task (`.gso_task_id`). Prefer **one task ID**
+while optimizing; reserve `--all` / `run_all_tasks.sh` for smoke tests.
 
 Useful flags: `./benchmark --keep-image` (skip image delete), `--no-pull`, `--reuse-report`
-(warns: timings may not match a newly rebuilt patch).
+(reuses only when logged `patch.diff` still matches current `project/`).
 
 **Maintenance scripts** (`scripts/`):
 
@@ -92,7 +112,8 @@ Useful flags: `./benchmark --keep-image` (skip image delete), `--no-pull`, `--re
 | Docker `409` container name conflict | Stale harness container; re-run `./benchmark` (cleanup is automatic) or `docker rm -f $(docker ps -aq --filter name=gso.eval.)` |
 | `code_changes: no` after editing | Edit wasn’t under that task’s files in `project/`, or patch is placeholder-only |
 | Missing `:latest` image | `bash scripts/images.sh pull-images <task>` then `./benchmark --keep-image` |
-| Wrong task / wrong commit | `./compile <task_id>` before editing |
+| Wrong task / wrong commit | `./compile <task_id>` before editing (save edits first) |
+| Edits gone after `--all` / other task | Task switch checked out another base. Recover from backup/commit if you had uncommitted work |
 
 ## `artemis_results.json` encodings
 
