@@ -9,7 +9,7 @@ pydantic_export_paths
 pydantic_load_env
 cd "${SCRIPT_DIR}/.."
 
-PY="${PY:-python3}"
+PY="${PY:-$(pydantic_python)}"
 export GSO_WORKSPACE_ROOT="${PYDANTIC_ROOT}"
 export GSO_PROJECT_ROOT="${PYDANTIC_ROOT}/project"
 
@@ -75,7 +75,7 @@ for iid in "${TASKS[@]}"; do
         continue
     fi
 
-    if ! python3 - "${iid}" "${PYDANTIC_ROOT}" <<'PY'
+    if ! "$(pydantic_python)" - "${iid}" "${PYDANTIC_ROOT}" <<'PY'
 import json, sys
 from pathlib import Path
 import yaml

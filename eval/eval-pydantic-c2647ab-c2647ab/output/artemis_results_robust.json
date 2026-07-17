@@ -2,7 +2,7 @@
   "instance_id": "pydantic__pydantic-c2647ab",
   "run_id": "benchmark-pydantic__pydantic-c2647ab",
   "model_name": "local-edit",
-  "recorded_at": "2026-07-07T18:05:00.162517+00:00",
+  "recorded_at": "2026-07-17T14:16:22.796776+00:00",
   "patch": {
     "patch_type": "unchanged",
     "code_changes": false
@@ -224,7 +224,7 @@
   "provenance": {
     "benchmark": "pydantic-c2647ab",
     "instance_id": "pydantic__pydantic-c2647ab",
-    "timestamp": "2026-07-07T18:05:00.162517+00:00",
+    "timestamp": "2026-07-17T14:16:22.796776+00:00",
     "benchmark_def_sha256": "70466f9c8cbc92a06f5b72746450d6cbe46bf9be091ae41205dbfc6959bd4c32",
     "dataset_version": "gso-bench/gso@test",
     "image": "slimshetty/gso:gso.eval.x86_64.pydantic__pydantic-c2647ab",

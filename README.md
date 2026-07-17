@@ -13,6 +13,7 @@ run the **GSO Docker harness** for that task’s pinned image. The harness does
 git clone git@github.com:Mta-adham/pydantic.git
 cd pydantic
 python3.12 -m venv .venv && source .venv/bin/activate
+# (after setup once, ./compile|benchmark|test auto-use .venv/bin/python)
 pip install -r requirements.txt
 # or: source scripts/setup.sh
 ```
@@ -30,7 +31,7 @@ bash scripts/images.sh verify-images
 ./compile pydantic__pydantic-4a09447   # sets .gso_task_id + syncs project/ to task base
 # edit project/pydantic/*.py (see Tasks table)
 ./benchmark                            # re-diffs project/ → Docker harness → results
-./test                                 # re-diffs project/; correctness JSON (reuses report if present)
+./test                                 # re-diffs project/; correctness JSON (re-runs Docker if patch changed)
 ```
 
 After editing `project/`, run `./benchmark` directly — a second `./compile` is optional.
@@ -53,9 +54,9 @@ to match expert.
 
 | Command | What it does |
 |---------|----------------|
-| `./compile [task]` | Sync `project/` + build `patch.diff` / `predictions.jsonl` |
-| `./benchmark [task]` | Prepare + re-diff `project/` → patch → GSO perf eval → `artemis_results*.json` + `summary.txt` |
-| `./test [task]` | Prepare + re-diff `project/` → correctness → `tests_artemis_results.json` (reuses `test-*` or `benchmark-*` report if present; `--rerun` for a fresh test harness) |
+| `./compile [task\|--all]` | Sync `project/` + build `patch.diff` / `predictions.jsonl` |
+| `./benchmark [task\|--all]` | Prepare + re-diff `project/` → patch → GSO perf eval → `artemis_results*.json` + `summary.txt` |
+| `./test [task\|--all]` | Prepare + re-diff `project/` → correctness → `tests_artemis_results.json` (reuses a prior report **only if** its patch still matches current `project/`; otherwise re-runs Docker; `--rerun` forces a fresh run) |
 | `./reset [task]` | Restore `project/` from `baseline/` (discard edits) |
 
 Omit the task ID to use the active task (`.gso_task_id`).
@@ -120,7 +121,7 @@ track correctness and GSO Opt@1 gates alongside wall-clock performance.
 | Expert parity | `vs_expert_parity_percent` | How close to expert speed (100 = matches expert) |
 | Correctness | `correctness_passed`, `perf_completion_rate` | A fast but broken patch scores 0 (`correctness_passed: 0`) |
 | Memory usage | `memory_measured`, `memory_mb_baseline/optimized/expert` | Some tasks are memory-bound; `memory_measured: 0` when harness has no RSS data |
-| Opt@1 (expert threshold) | `opt_base_passed`, `opt_at_1` | GSO gates: beat baseline (≥1.2× GM) and match expert (harmonic mean > 0.95×) |
+| Opt@1 (expert threshold) | `opt_base_passed`, `opt_at_1` | GSO gates: **real** `code_changes`, beat baseline (≥1.2× GM), match expert; placeholder/no-op patches score 0 even if harness timing noise looks like a win |
 
 `tests_passed` / `tests_total` count perf microbenchmarks completed when correctness
 passes. `perf_completion_rate` is their percentage (`100` = full harness run).

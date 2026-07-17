@@ -19,7 +19,7 @@ echo "marker: $MARKER"
 
 verify_task() {
     local iid="$1"
-    python3 - "$iid" "${PYDANTIC_ROOT}" "${MARKER}" <<'PY'
+    "$(pydantic_python)" - "$iid" "${PYDANTIC_ROOT}" "${MARKER}" <<'PY'
 import importlib.util
 import json
 import os
@@ -38,7 +38,7 @@ m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 
 meta = m.load_metadata(iid)
-rel_files = m.patch_file_list(meta) or list(meta.get("files", []))
+rel_files = m.patch_file_list(meta, iid) or list(meta.get("files", []))
 if not rel_files:
     raise SystemExit("no patch files in metadata")
 rel = rel_files[0]

@@ -15,6 +15,16 @@ pydantic_export_paths() {
     export GSO_PROJECT_ROOT="$hub/project"
 }
 
+# Prefer hub .venv so ./compile|benchmark|test work without `source .venv/bin/activate`.
+pydantic_python() {
+    local hub="${PYDANTIC_ROOT:-$(pydantic_hub_root)}"
+    if [[ -x "$hub/.venv/bin/python" ]]; then
+        echo "$hub/.venv/bin/python"
+    else
+        command -v python3
+    fi
+}
+
 pydantic_workflow_py() {
     local hub="${PYDANTIC_ROOT:-$(pydantic_hub_root)}"
     local wf="$hub/scripts/workflow.py"
@@ -38,7 +48,7 @@ pydantic_load_env() {
 }
 
 pydantic_list_tasks() {
-    GSO_WORKSPACE_ROOT="${PYDANTIC_ROOT}" python3 "${PYDANTIC_ROOT}/scripts/hub.py" list
+    GSO_WORKSPACE_ROOT="${PYDANTIC_ROOT}" "$(pydantic_python)" "${PYDANTIC_ROOT}/scripts/hub.py" list
 }
 
 pydantic_task_ids() {
@@ -49,7 +59,7 @@ pydantic_workflow() {
     local wf
     wf="$(pydantic_workflow_py)"
     export GSO_WORKSPACE_ROOT="${PYDANTIC_ROOT}"
-    PYTHONPATH="$(dirname "$wf")${PYTHONPATH:+:$PYTHONPATH}" python3 "$wf" "$@"
+    PYTHONPATH="$(dirname "$wf")${PYTHONPATH:+:$PYTHONPATH}" "$(pydantic_python)" "$wf" "$@"
 }
 
 pydantic_workflow_eval() {
@@ -57,7 +67,7 @@ pydantic_workflow_eval() {
     local wf
     wf="$(pydantic_workflow_py)"
     export GSO_WORKSPACE_ROOT="${PYDANTIC_ROOT}"
-    PYTHONPATH="$(dirname "$wf")" python3 -c "
+    PYTHONPATH="$(dirname "$wf")" "$(pydantic_python)" -c "
 import importlib.util
 spec = importlib.util.spec_from_file_location('gso_workflow', '${wf}')
 m = importlib.util.module_from_spec(spec)
@@ -71,7 +81,7 @@ pydantic_print_status() {
 }
 
 pydantic_active_task_id() {
-    GSO_WORKSPACE_ROOT="${PYDANTIC_ROOT}" python3 -c "
+    GSO_WORKSPACE_ROOT="${PYDANTIC_ROOT}" "$(pydantic_python)" -c "
 import os, yaml
 from pathlib import Path
 p = Path(os.environ['GSO_WORKSPACE_ROOT']) / '.gso_task_id'

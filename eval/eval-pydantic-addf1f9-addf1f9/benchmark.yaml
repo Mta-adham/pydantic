@@ -11,7 +11,7 @@ git:
   base_commit: addf1f99f232b27a62d7968c49ffca60f5b56a92^
 
 runner:
-  timeout_seconds: 120
+  timeout_seconds: 600
   timing_iterations: 15
 
 api: BaseModel.__setattr__

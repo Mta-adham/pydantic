@@ -91,15 +91,47 @@ def changed_lines_per_file(diff_text: str) -> dict[str, int]:
 def is_incidental_path(rel_path: str) -> bool:
     """Paths touched in expert commits but not meaningful optimization targets."""
     name = Path(rel_path).name
-    if name in {"pdm.lock", "uv.lock", "poetry.lock", "package-lock.json", ".gitignore"}:
+    if name in {
+        "pdm.lock",
+        "uv.lock",
+        "poetry.lock",
+        "package-lock.json",
+        ".gitignore",
+        "CHANGES.rst",
+        "CHANGELOG.rst",
+        "HISTORY.rst",
+        "NEWS.rst",
+    }:
         return True
     if rel_path.startswith(("docs/", "changes/")):
         return True
     return False
 
 
-def patch_file_list(meta: dict) -> list[str]:
-    """Source files to diff for a task (drops lockfiles and docs churn)."""
+def benchmark_yaml_files(instance_id: str) -> list[str]:
+    """Authored edit targets from eval/<task>/benchmark.yaml (source of truth)."""
+    try:
+        defn = _runner_module().load_benchmark_def(benchmark_root(), instance_id)
+    except SystemExit:
+        return []
+    files = defn.get("files") or []
+    return [
+        p
+        for p in files
+        if isinstance(p, str) and p.strip() and not is_incidental_path(p)
+    ]
+
+
+def patch_file_list(meta: dict, instance_id: str | None = None) -> list[str]:
+    """Source files to diff for a task (drops lockfiles and docs churn).
+
+    Prefer benchmark.yaml `files` over metadata.json so stale setup snapshots
+    cannot drop real edit targets or include incidental paths.
+    """
+    if instance_id:
+        yaml_files = benchmark_yaml_files(instance_id)
+        if yaml_files:
+            return yaml_files
     return [p for p in meta.get("files", []) if not is_incidental_path(p)]
 
 
@@ -590,17 +622,36 @@ def setup_workspace(
             instance_id,
             checkout=not project_commit_matches_task(instance_id),
         )
-        meta_paths = json.loads(meta_path.read_text()).get("files", [])
-        populate_expert_dir(instance, root, meta_paths)
-        if os.environ.get("GSO_QUIET_PREPARE", "").strip() == "1":
-            print(
-                f"Ready: {instance_id} — project/ ready "
-                f"(edits preserved), eval/{root.name}"
+        raw_meta = json.loads(meta_path.read_text())
+        meta_paths = patch_file_list(raw_meta, instance_id) or list(
+            raw_meta.get("files", [])
+        )
+        baseline_dir = root / "baseline"
+        yaml_files = benchmark_yaml_files(instance_id)
+        stale_baseline = bool(
+            yaml_files
+            and (
+                set(yaml_files) != set(raw_meta.get("files") or [])
+                or any(not (baseline_dir / rel).is_file() for rel in yaml_files)
             )
+        )
+        if stale_baseline:
+            print(
+                f"baseline/metadata out of sync with benchmark.yaml files for "
+                f"{instance_id}; rebuilding eval workspace…"
+            )
+            force = True
+        else:
+            populate_expert_dir(instance, root, meta_paths)
+            if os.environ.get("GSO_QUIET_PREPARE", "").strip() == "1":
+                print(
+                    f"Ready: {instance_id} — project/ ready "
+                    f"(edits preserved), eval/{root.name}"
+                )
+                return root
+            print(f"Workspace already exists: {root}")
+            print_benchmark_hub_edit_hints(instance_id, meta_paths)
             return root
-        print(f"Workspace already exists: {root}")
-        print_benchmark_hub_edit_hints(instance_id, meta_paths)
-        return root
 
     if root.exists():
         clear_regenerable_workspace(root)
@@ -615,7 +666,11 @@ def setup_workspace(
         checkout_project_at_commit(instance, proj)
     source_dir = proj
 
-    rel_files = files or files_from_diff(instance.gt_diff, include_tests=include_tests)
+    rel_files = (
+        files
+        or benchmark_yaml_files(instance_id)
+        or files_from_diff(instance.gt_diff, include_tests=include_tests)
+    )
     if not rel_files:
         raise SystemExit(
             "Could not determine files to extract. Pass --files path/to/file.py"
@@ -653,7 +708,12 @@ def setup_workspace(
     if not copied:
         raise SystemExit("No files were copied into baseline/.")
 
-    populate_expert_dir(instance, root, copied)
+    try:
+        populate_expert_dir(instance, root, copied)
+    except SystemExit as exc:
+        # expert/ is local reference only; baseline + metadata are enough to evaluate.
+        print(f"Warning: could not materialize expert/ ({exc})")
+        sync_optimization_guide(instance_id, root / "expert")
 
     meta = {
         "instance_id": instance.instance_id,
@@ -683,7 +743,7 @@ def reset_workspace_edits(instance_id: str) -> Path:
         raise SystemExit(f"Missing project/ for {instance_id}")
 
     restored: list[str] = []
-    for rel_path in patch_file_list(meta) or meta.get("files", []):
+    for rel_path in patch_file_list(meta, instance_id) or meta.get("files", []):
         src = baseline_dir / rel_path
         dst = work_dir / rel_path
         if not src.exists():
@@ -760,15 +820,17 @@ def build_patch(
     root = workspace_dir(instance_id)
     baseline_dir = root / "baseline"
     work_dir = project_root()
-    rel_files = patch_file_list(meta)
+    rel_files = patch_file_list(meta, instance_id)
     if not rel_files:
         rel_files = list(meta.get("files", []))
 
     chunks: list[str] = []
+    missing_baseline: list[str] = []
     for rel_path in rel_files:
         orig = baseline_dir / rel_path
         edited = work_dir / rel_path
         if not orig.exists():
+            missing_baseline.append(rel_path)
             continue
         if not edited.exists():
             raise SystemExit(
@@ -796,6 +858,13 @@ def build_patch(
         elif proc.returncode != 0:
             raise SystemExit(proc.stderr or "diff failed")
 
+    if missing_baseline:
+        raise SystemExit(
+            f"baseline/ is missing {len(missing_baseline)} file(s) required by "
+            f"benchmark.yaml for {instance_id}:\n"
+            + "\n".join(f"  - {p}" for p in missing_baseline)
+            + f"\nRebuild with: ./compile --force {instance_id}"
+        )
     patch = "".join(chunks)
     edit_label = "project"
     if not patch.strip():
@@ -953,7 +1022,12 @@ def write_comparison_summary(
 ) -> Path:
     """Human-readable baseline vs project summary at hub root summary.txt."""
     instance_report = load_instance_report(instance_id, run_id, model_name)
-    parts = build_improvement_summary(instance_report, instance_id=instance_id)
+    parts = build_improvement_summary(
+        instance_report,
+        instance_id=instance_id,
+        run_id=run_id,
+        model_name=model_name,
+    )
     summary = parts["summary"]
     runtime = summary.get("runtime_s") or {}
     vs_base = summary.get("vs_baseline") or {}
@@ -1105,6 +1179,29 @@ def harness_report_exists(
     return instance_report_path(instance_id, run_id, model_name).is_file()
 
 
+def _normalize_patch_text(text: str) -> str:
+    return text.replace("\r\n", "\n")
+
+
+def harness_report_matches_current_patch(
+    instance_id: str, run_id: str, model_name: str
+) -> bool:
+    """True when an existing harness run evaluated the same patch as current project/.
+
+    The Docker harness copies log_dir/patch.diff from predictions at run time. After
+    build_patch refreshes predictions.jsonl, reuse is only safe if that logged patch
+    still matches — otherwise Docker would not see the latest project/ edits.
+    """
+    if not harness_report_exists(instance_id, run_id, model_name):
+        return False
+    logged = instance_log_dir(instance_id, run_id, model_name) / "patch.diff"
+    if not logged.is_file():
+        return False
+    current = _normalize_patch_text(_load_evaluated_patch_text(instance_id))
+    previous = _normalize_patch_text(logged.read_text())
+    return current == previous
+
+
 def default_benchmark_run_id(instance_id: str) -> str:
     return f"benchmark-{instance_id}"
 
@@ -1121,37 +1218,65 @@ def resolve_test_harness_run(
     from_benchmark: bool = False,
     rerun: bool = False,
 ) -> tuple[str, bool]:
-    """Pick test report source: reuse test, else benchmark, else run test harness."""
+    """Pick test report source: reuse test, else benchmark, else run test harness.
+
+    Reuse only when the existing report's patch.diff matches the patch just rebuilt
+    from project/. A changed project/ edit always forces a fresh Docker harness run.
+    """
     test_run_id = default_test_run_id(instance_id)
     benchmark_run_id = default_benchmark_run_id(instance_id)
+
+    def _try_reuse(candidate_run_id: str, label: str) -> tuple[str, bool] | None:
+        path = instance_report_path(instance_id, candidate_run_id, model_name)
+        if not path.is_file():
+            return None
+        if harness_report_matches_current_patch(
+            instance_id, candidate_run_id, model_name
+        ):
+            print(f"Using existing {label} harness report: {path}")
+            return candidate_run_id, False
+        print(
+            f"Stale {label} harness report (project/ patch changed); "
+            f"re-running Docker harness.\n  old report: {path}"
+        )
+        return None
 
     if run_id:
         if rerun:
             return run_id, True
-        return run_id, not harness_report_exists(instance_id, run_id, model_name)
+        reused = _try_reuse(run_id, "requested")
+        if reused is not None:
+            return reused
+        return run_id, True
 
     if from_benchmark:
         path = instance_report_path(instance_id, benchmark_run_id, model_name)
-        if path.is_file():
+        if not path.is_file():
+            raise SystemExit(
+                f"No benchmark harness report at {path}.\n"
+                f"Run: {harness_command_hint(instance_id, command='benchmark')}"
+            )
+        if harness_report_matches_current_patch(
+            instance_id, benchmark_run_id, model_name
+        ):
             print(f"Using benchmark harness report: {path}")
             return benchmark_run_id, False
         raise SystemExit(
-            f"No benchmark harness report at {path}.\n"
-            f"Run: {harness_command_hint(instance_id, command='benchmark')}"
+            f"Benchmark harness report is stale (project/ patch changed): {path}\n"
+            f"Re-run: {harness_command_hint(instance_id, command='benchmark')}\n"
+            "Or: ./test --rerun"
         )
 
     if rerun:
         return test_run_id, True
 
-    test_path = instance_report_path(instance_id, test_run_id, model_name)
-    if test_path.is_file():
-        print(f"Using existing test harness report: {test_path}")
-        return test_run_id, False
-
-    benchmark_path = instance_report_path(instance_id, benchmark_run_id, model_name)
-    if benchmark_path.is_file():
-        print(f"Using benchmark harness report: {benchmark_path}")
-        return benchmark_run_id, False
+    for candidate, label in (
+        (test_run_id, "test"),
+        (benchmark_run_id, "benchmark"),
+    ):
+        reused = _try_reuse(candidate, label)
+        if reused is not None:
+            return reused
 
     return test_run_id, True
 
@@ -1265,9 +1390,21 @@ def load_instance_report(
         if run_log.is_file()
         else "A prior incomplete run may have left stale logs under logs/run_evaluation/."
     )
+    timeout_hint = ""
+    if run_log.is_file():
+        try:
+            log_tail = run_log.read_text(errors="replace")[-4000:]
+        except OSError:
+            log_tail = ""
+        if "timed out" in log_tail.lower() or "Timeout error" in log_tail:
+            timeout_hint = (
+                "\nHarness timed out before writing report.json. "
+                "Increase runner.timeout_seconds in benchmark.yaml "
+                f"or pass --timeout (current run_id={run_id})."
+            )
     raise SystemExit(
         f"No GSO harness report at {path}.\n"
-        f"{hint}\n"
+        f"{hint}{timeout_hint}\n"
         f"Re-run: {harness_command_hint(instance_id, command=command)}"
     )
 
@@ -1371,6 +1508,12 @@ def run_harness(
     finally:
         if ephemeral_image:
             cleanup_instance_images(instance)
+    # Harness may exit 0 even when the instance errored/timed out without report.json.
+    report = instance_report_path(instance_id, run_id, model_name)
+    if not report.is_file():
+        load_instance_report(
+            instance_id, run_id, model_name, command=action
+        )  # raises with timeout/log hints
     return run_id
 
 
@@ -1713,8 +1856,22 @@ def _is_placeholder_only_patch_text(patch_text: str) -> bool:
     return True
 
 
-def _load_evaluated_patch_text(instance_id: str) -> str:
-    """Patch text the harness evaluates (predictions.jsonl), else patch.diff."""
+def _load_evaluated_patch_text(
+    instance_id: str,
+    *,
+    run_id: str | None = None,
+    model_name: str = "local-edit",
+) -> str:
+    """Patch text used for scoring (code_changes / placeholder detection).
+
+    Prefer the harness log ``patch.diff`` for ``run_id`` — that is what Docker
+    actually applied. Falling back to current predictions.jsonl can mis-score
+    when project/ changed after the run.
+    """
+    if run_id:
+        logged = instance_log_dir(instance_id, run_id, model_name) / "patch.diff"
+        if logged.is_file():
+            return logged.read_text()
     pred = predictions_path(instance_id)
     if pred.is_file():
         raw = pred.read_text().strip()
@@ -1732,9 +1889,18 @@ def _load_evaluated_patch_text(instance_id: str) -> str:
     return ""
 
 
-def _is_placeholder_patch(instance_id: str) -> bool:
-    """True when the evaluated patch is only the compile-time gso-placeholder marker."""
-    return _is_placeholder_only_patch_text(_load_evaluated_patch_text(instance_id))
+def _is_placeholder_patch(
+    instance_id: str,
+    *,
+    run_id: str | None = None,
+    model_name: str = "local-edit",
+) -> bool:
+    """True when the scored patch is only the compile-time gso-placeholder marker."""
+    return _is_placeholder_only_patch_text(
+        _load_evaluated_patch_text(
+            instance_id, run_id=run_id, model_name=model_name
+        )
+    )
 
 
 def _workspace_files_unchanged(instance_id: str) -> bool:
@@ -1743,7 +1909,7 @@ def _workspace_files_unchanged(instance_id: str) -> bool:
     work_dir = project_root()
     if not baseline_dir.is_dir() or not work_dir.is_dir():
         return False
-    for rel_path in patch_file_list(meta) or meta.get("files", []):
+    for rel_path in patch_file_list(meta, instance_id) or meta.get("files", []):
         left = baseline_dir / rel_path
         right = work_dir / rel_path
         if not left.exists() or not right.exists():
@@ -1759,13 +1925,21 @@ def _workspace_files_unchanged(instance_id: str) -> bool:
     return True
 
 
-def _patch_metadata(instance_id: str) -> dict:
+def _patch_metadata(
+    instance_id: str,
+    *,
+    run_id: str | None = None,
+    model_name: str = "local-edit",
+) -> dict:
     """Classify the patch that was / will be evaluated — not the live workspace tree.
 
-    Artemis (and local reset) can leave project/ matching baseline/ after the harness
-    already ran a real model_patch. Workspace equality must not override patch content.
+    Prefer the harness-logged patch for ``run_id`` when present. Artemis (and local
+    reset) can leave project/ matching baseline/ after the harness already ran a
+    real model_patch; workspace equality must not override that evaluated patch.
     """
-    if _is_placeholder_patch(instance_id):
+    if _is_placeholder_patch(
+        instance_id, run_id=run_id, model_name=model_name
+    ):
         return {"patch_type": "unchanged", "code_changes": False}
     return {"patch_type": "real_edit", "code_changes": True}
 
@@ -2004,8 +2178,17 @@ def _harness_eval_metrics(
         "correctness_passed": instance_report.get("test_passed"),
         "patch_applied": instance_report.get("patch_successfully_applied"),
         "harness_ran": instance_report.get("base_successfully_run"),
-        "opt_base_passed": instance_report.get("opt_base"),
-        "opt_commit_passed": instance_report.get("opt_commit"),
+        # Prefer gated values from harness= when provided (e.g. code_changes demotion).
+        "opt_base_passed": (
+            harness["opt_base_passed"]
+            if "opt_base_passed" in harness
+            else instance_report.get("opt_base")
+        ),
+        "opt_commit_passed": (
+            harness["opt_commit_passed"]
+            if "opt_commit_passed" in harness
+            else instance_report.get("opt_commit")
+        ),
         "perf_tests_passed": tests_passed if tests_total else None,
         "perf_tests_total": tests_total or None,
         "perf_completion_rate": perf_completion_rate,
@@ -2130,7 +2313,11 @@ def _slim_per_test(instance_report: dict) -> dict | None:
 
 
 def build_improvement_summary(
-    instance_report: dict, *, instance_id: str | None = None
+    instance_report: dict,
+    *,
+    instance_id: str | None = None,
+    run_id: str | None = None,
+    model_name: str = "local-edit",
 ) -> dict:
     """Human-readable baseline → optimized comparison (ratios, not machine-absolute)."""
     time_stats = instance_report.get("time_stats", {})
@@ -2152,7 +2339,11 @@ def build_improvement_summary(
         gm_patch_base, gsd_patch_base, confidence, pct_faster
     )
 
-    patch_meta = _patch_metadata(instance_id) if instance_id else {}
+    patch_meta = (
+        _patch_metadata(instance_id, run_id=run_id, model_name=model_name)
+        if instance_id
+        else {}
+    )
     no_code_changes = not patch_meta.get("code_changes", True)
     patch_base_speedups = (
         opt_stats.get("per_test_speedups", {}).get("patch_base_speedups", []) or []
@@ -2205,8 +2396,12 @@ def build_improvement_summary(
     harness_block = {
         "tests_passed": tests_passed_count,
         "tests_total": tests_total,
-        "opt_base_passed": instance_report.get("opt_base"),
-        "opt_commit_passed": instance_report.get("opt_commit"),
+        # Demote harness opt flags when there is no real project/ edit — raw
+        # opt_base can be true from timing noise on placeholder patches.
+        "opt_base_passed": bool(instance_report.get("opt_base"))
+        and not no_code_changes,
+        "opt_commit_passed": bool(instance_report.get("opt_commit"))
+        and not no_code_changes,
     }
 
     return {
@@ -2249,7 +2444,12 @@ def build_artemis_benchmark_payload(
     model_name: str,
     instance_report: dict,
 ) -> dict:
-    parts = build_improvement_summary(instance_report, instance_id=instance_id)
+    parts = build_improvement_summary(
+        instance_report,
+        instance_id=instance_id,
+        run_id=run_id,
+        model_name=model_name,
+    )
     recorded_at = datetime.now(timezone.utc).isoformat()
     payload = {
         "instance_id": instance_id,
@@ -2330,8 +2530,12 @@ def build_artemis_benchmark_payload_numeric(
     instance_report: dict,
 ) -> dict[str, int | float]:
     """Flat Artemis JSON: headline metrics only (no per-test or raw timings)."""
-    del model_name  # single model in this hub; omitted from numeric export
-    parts = build_improvement_summary(instance_report, instance_id=instance_id)
+    parts = build_improvement_summary(
+        instance_report,
+        instance_id=instance_id,
+        run_id=run_id,
+        model_name=model_name,
+    )
     recorded_at = datetime.now(timezone.utc).isoformat()
     summary = parts["summary"]
     patch = parts["patch"]
@@ -2393,15 +2597,22 @@ def build_artemis_benchmark_payload_numeric(
     )
 
     # GSO paper primary metrics (https://arxiv.org/abs/2505.23671)
+    # Require a real project/ edit — placeholder / no-op patches must not count as opts
+    # (harness opt_base can trip on timing noise alone).
+    has_code_changes = bool(patch.get("code_changes"))
     # opt_at_1: Opt@1 at default threshold p=0.95 (agent achieves ≥95% of expert speedup)
-    out["opt_at_1"] = _bool_num(instance_report.get("opt_commit"))
+    out["opt_at_1"] = _bool_num(
+        has_code_changes and instance_report.get("opt_commit")
+    )
     opt_stats = instance_report.get("opt_stats") or {}
     gm_patch_commit = opt_stats.get("gm_speedup_patch_commit") or 0.0
     gm_patch_base = opt_stats.get("gm_speedup_patch_base") or 0.0
     correctness = bool(instance_report.get("test_passed"))
     # Patch must beat baseline by BASELINE_OPT_SPEEDUP (1.2x) to count as a real optimisation.
     # Matching expert timing without improving over baseline is not an opt (e.g. unchanged code).
-    beats_baseline = round(gm_patch_base, 1) >= BASELINE_OPT_SPEEDUP
+    beats_baseline = (
+        has_code_changes and round(gm_patch_base, 1) >= BASELINE_OPT_SPEEDUP
+    )
     # opt_p_at_1_p{N}: Opt_p@1 for threshold p=N/100 (correctness + beats baseline + ≥p% of expert speed)
     for suffix, threshold in [
         ("p0", 0.0), ("p10", 0.1), ("p20", 0.2), ("p30", 0.3),
@@ -2409,10 +2620,15 @@ def build_artemis_benchmark_payload_numeric(
         ("p80", 0.8), ("p90", 0.9), ("p95", 0.95), ("p100", 1.0),
     ]:
         if threshold == 0.0:
+            # p0 = functional correctness only (allowed without a perf win)
             out[f"opt_p_at_1_{suffix}"] = int(correctness)
         else:
-            out[f"opt_p_at_1_{suffix}"] = int(correctness and beats_baseline and gm_patch_commit >= threshold)
-
+            out[f"opt_p_at_1_{suffix}"] = int(
+                correctness
+                and has_code_changes
+                and beats_baseline
+                and gm_patch_commit >= threshold
+            )
     # --- Runtime depth (variance / measurement quality) ---
     time_stats_raw = instance_report.get("time_stats") or {}
     base_std = _finite_scalar(time_stats_raw.get("base_std"))
@@ -2488,10 +2704,22 @@ def build_artemis_test_payload(
         ),
     }
     eval_metrics = _harness_eval_metrics(instance_report, harness=harness_stub)
-    patch_meta = _patch_metadata(instance_id)
-    improvement = build_improvement_summary(
-        instance_report, instance_id=instance_id
+    patch_meta = _patch_metadata(
+        instance_id, run_id=run_id, model_name=model_name
     )
+    has_code_changes = bool(patch_meta.get("code_changes"))
+    # Harness opt_* can trip on timing noise for placeholder patches; do not
+    # report an optimization win unless project/ actually changed.
+    if not has_code_changes:
+        eval_metrics["opt_base_passed"] = False
+        eval_metrics["opt_commit_passed"] = False
+    improvement = build_improvement_summary(
+        instance_report,
+        instance_id=instance_id,
+        run_id=run_id,
+        model_name=model_name,
+    )
+    summary = improvement.get("summary") or {}
     payload = {
         "instance_id": instance_id,
         "run_id": run_id,
@@ -2499,7 +2727,7 @@ def build_artemis_test_payload(
         "recorded_at": recorded_at,
         "code_changes": patch_meta.get("code_changes"),
         "patch_type": patch_meta.get("patch_type"),
-        "verdict": improvement.get("verdict"),
+        "verdict": summary.get("verdict"),
         "patch_exists": instance_report.get("patch_exists"),
         "patch_successfully_applied": instance_report.get(
             "patch_successfully_applied"
@@ -2508,9 +2736,9 @@ def build_artemis_test_payload(
         "test_passed": instance_report.get("test_passed"),
         "passed": instance_report.get("test_passed"),
         "opt": {
-            "base": instance_report.get("opt_base"),
-            "commit": instance_report.get("opt_commit"),
-            "main": instance_report.get("opt_main"),
+            "base": bool(instance_report.get("opt_base")) and has_code_changes,
+            "commit": bool(instance_report.get("opt_commit")) and has_code_changes,
+            "main": bool(instance_report.get("opt_main")) and has_code_changes,
         },
         "speedups": {
             "gm_patch_base": opt_stats.get("gm_speedup_patch_base"),
@@ -2607,12 +2835,21 @@ def benchmark_patch(
     )
     run_id = run_id or f"benchmark-{instance_id}"
     report_path = instance_report_path(instance_id, run_id, model_name)
-    if reuse_report and report_path.is_file():
+    can_reuse = (
+        reuse_report
+        and report_path.is_file()
+        and harness_report_matches_current_patch(instance_id, run_id, model_name)
+    )
+    if reuse_report and report_path.is_file() and not can_reuse:
         print(
-            "Warning: --reuse-report skips harness; timings come from an existing "
-            "report while patch.diff was rebuilt from current project/."
+            "Warning: --reuse-report ignored; existing report patch does not match "
+            "current project/ (re-running Docker harness)."
         )
-    elif not reuse_report or not report_path.is_file():
+    if can_reuse:
+        print(
+            "Reusing harness report (--reuse-report); patch matches current project/."
+        )
+    else:
         run_harness(
             instance_id,
             model_name=model_name,

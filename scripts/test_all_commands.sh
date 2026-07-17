@@ -23,7 +23,7 @@ failures=()
 
 verify_outputs() {
     local iid="$1"
-    python3 - "${iid}" "${PYDANTIC_ROOT}" <<'PY'
+    "$(pydantic_python)" - "${iid}" "${PYDANTIC_ROOT}" <<'PY'
 import json, sys
 from pathlib import Path
 import yaml
@@ -82,7 +82,7 @@ PY
 
 verify_reset() {
     local iid="$1"
-    python3 - "${iid}" "${PYDANTIC_ROOT}" <<'PY'
+    "$(pydantic_python)" - "${iid}" "${PYDANTIC_ROOT}" <<'PY'
 import importlib.util, subprocess, sys
 from pathlib import Path
 
@@ -95,7 +95,7 @@ iid = sys.argv[1]
 ws = m.workspace_dir(iid)
 baseline = ws / "baseline"
 project = m.project_root()
-meta_files = m.patch_file_list(m.load_metadata(iid))
+meta_files = m.patch_file_list(m.load_metadata(iid), iid)
 for rel in meta_files:
     b = (baseline / rel).read_text()
     p = (project / rel).read_text()
